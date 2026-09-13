@@ -1,0 +1,9 @@
+# Keep the repo LF everywhere: the generated artifacts (client.js / index.js /
+# cordis.patch.yml) are byte-compared against src/ by `npm test`, so a CRLF
+# working copy would make the build check disagree with the sources.
+* text=auto eol=lf
+*.yml text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
