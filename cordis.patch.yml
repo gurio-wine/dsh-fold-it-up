@@ -1,0 +1,8 @@
+# dsh-fold-it-up bundle patch: one host row inside the profile roster.
+# The row is what makes the package resolvable to the Web client-modules scan,
+# which is what serves and boots the browser half declared by package.json's
+# `dsh.client`.
+- insert:
+    - id: dsh-fold-it-up
+      name: dsh-fold-it-up
+      config: {}

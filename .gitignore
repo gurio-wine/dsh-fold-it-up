@@ -1,0 +1,14 @@
+# dependencies (this package has none — kept so a stray install never lands in a commit)
+node_modules/
+pnpm-lock.yaml
+
+# probe / verification scratch output
+*.log
+probe-*.txt
+*.tmp
+
+# editors & OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

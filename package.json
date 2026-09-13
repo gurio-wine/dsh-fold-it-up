@@ -1,0 +1,53 @@
+{
+  "name": "dsh-fold-it-up",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Force every finished turn's work process to fold in the DSH Web chat: one summary line per turn, expandable, historical turns included.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "check": "node tools/build.mjs --check",
+    "test": "node --test tools/*.test.mjs && node tools/build.mjs --check"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "fold",
+    "turn-process",
+    "transcript"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-store",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0-rc.8 <5"
+  }
+}
