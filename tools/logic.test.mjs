@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  KIND_ATTRIBUTE, MEMBER_ATTRIBUTE, attachNodeData, effectiveTurns, foldColumn,
+  KIND_ATTRIBUTE, MEMBER_ATTRIBUTE, attachNodeData, autoScrollTarget, effectiveTurns, foldColumn,
   foldTurn, groupSeats, isAnswerRow, isContextRow, isIndependentKind, isProcessMember,
 } from '../src/logic.js'
 
@@ -741,4 +741,47 @@ test('expansion is read from the row inside the seat, not the seat itself', () =
   const published = foldColumn(flow, key => nodes.get(key), OPS)
   assert.equal(published.turns.get(8).open, true)
   assert.equal(published.turns.get(8).hidden, 0)
+})
+
+// --- auto-scroll: where a just-closed Turn's question belongs ---------------
+
+/** A scrollport whose question sits `questionTop` px below its own top edge. */
+function geometry({ scrollTop = 1200, floor = 2000, questionTop = -900 } = {}) {
+  return { scrollTop, floor, questionTop }
+}
+
+test('a closing turn scrolls its question back to the scrollport top', () => {
+  // The measured live case: pinned to the floor, question 1937px above it.
+  const target = autoScrollTarget({ closed: true }, geometry({ scrollTop: 1993, floor: 1993, questionTop: -1937 }))
+  assert.deepEqual(target, { top: 56 })
+})
+
+test('a question already on the top edge is left alone', () => {
+  // Idempotence: this is why a second pass cannot twitch the view.
+  assert.equal(autoScrollTarget({ closed: true }, geometry({ questionTop: 0 })), null)
+  assert.equal(autoScrollTarget({ closed: true }, geometry({ questionTop: 0.4 })), null)
+})
+
+test('a transcript with nothing to scroll is left alone', () => {
+  // The short-answer case: the write would be a no-op, so it is never made.
+  assert.equal(autoScrollTarget({ closed: true }, geometry({ floor: 0, scrollTop: 0, questionTop: 56 })), null)
+})
+
+test('only a turn that just closed scrolls', () => {
+  // A running turn, and a turn already closed in the previous pass (history,
+  // session switch, or simply a later pass over the same closed turn).
+  assert.equal(autoScrollTarget({ closed: false }, geometry()), null)
+  assert.equal(autoScrollTarget({ closed: undefined }, geometry()), null)
+})
+
+test('expanding a turn never moves the reader', () => {
+  // The disclosure was open in the previous pass: the reader is looking at the
+  // work on purpose.
+  assert.equal(autoScrollTarget({ closed: true, wasOpen: true }, geometry()), null)
+})
+
+test('a scroll target is never negative and never survives broken geometry', () => {
+  assert.deepEqual(autoScrollTarget({ closed: true }, geometry({ scrollTop: 0, questionTop: -900 })), { top: 0 })
+  assert.equal(autoScrollTarget({ closed: true }, geometry({ scrollTop: Number.NaN })), null)
+  assert.equal(autoScrollTarget({ closed: true }, null), null)
 })

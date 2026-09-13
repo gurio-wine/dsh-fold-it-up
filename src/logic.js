@@ -64,6 +64,15 @@
  * the preceding Turn. That is enough for the hide set, because a row is only
  * ever hidden when it precedes the Turn's answer, and the answer always belongs
  * to the Turn itself.
+ *
+ * THE ANSWER'S FIRST LINE IS THE POINT
+ *
+ * A turn that closes after a long answer leaves the view at the bottom of that
+ * answer, which is the wrong end to read it from. The decision below turns "a
+ * turn just closed" plus four numbers measured off the scroller into one scroll,
+ * and it lives here rather than in the browser half for the usual reason: every
+ * condition that must leave the reader alone is a truth table, and a truth table
+ * that only a browser can exercise is a truth table nobody checks.
  */
 
 /** Chat Node kinds that stay outside the fold's hiding range. */
@@ -421,6 +430,45 @@ function lastProse(rows, from) {
 function before(rows, members, answer) {
   const boundary = rows.indexOf(answer)
   return members.filter(row => rows.indexOf(row) < boundary)
+}
+
+/**
+ * Where one just-closed Turn's question should be scrolled to, or null.
+ *
+ * The scroll exists because a finished answer is read from its FIRST line, while
+ * the transcript is left at its last one. Only a Turn that has just closed
+ * qualifies: a Turn that was already closed when the page loaded (a history, a
+ * session switch) is not an event, and scrolling on mount would yank the reader
+ * away from wherever they were. Everything else here is a reason to leave the
+ * scrollbar alone, and each one is a separate way this could be annoying:
+ *
+ *   - no question row resolved — nothing to aim at;
+ *   - `floor <= 0` — the transcript does not scroll at all, which is the short
+ *     answer case: the write would be a no-op anyway, and not making it keeps
+ *     the "already at the top" state from being re-evaluated forever;
+ *   - the question is already on the scrollport's top edge — the view is where
+ *     this would put it, so moving it would only be a visible twitch.
+ *
+ * Only the offset is computed here: HOW the scroll animates belongs to the
+ * stylesheet, where `prefers-reduced-motion` can rewrite it without this
+ * decision having to know the reader's motion setting.
+ * @param change - `{ closed, wasOpen }`: the Turn's closure in the current pass
+ *   (`closed: boolean | undefined`) and whether its disclosure was expanded in
+ *   the previous one (expanding a Turn is the reader's own gesture, not a
+ *   moment to move their view).
+ * @param geometry - `{ scrollTop, floor, questionTop }`, all in pixels; the
+ *   question's top is measured against the scrollport's own top edge.
+ * @returns `{ top }`, or null when the reader must be left alone.
+ */
+export function autoScrollTarget(change, geometry) {
+  if (change?.closed !== true) return null
+  if (change.wasOpen === true) return null
+  if (geometry === null || geometry === undefined) return null
+  const { scrollTop, floor, questionTop } = geometry
+  if (![scrollTop, floor, questionTop].every(Number.isFinite)) return null
+  if (floor <= 0) return null
+  if (Math.abs(questionTop) <= 0.5) return null
+  return { top: Math.max(0, scrollTop + questionTop) }
 }
 
 /**
