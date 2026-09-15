@@ -60,7 +60,7 @@
  * screen: the loudest failure was the one case the fold refused to collapse.
  *
  * Deciding those needs only the fact that already gates this module: the Turn is
- * closed. The first closing row in the group is where its process ends, so
+ * closed. The LAST closing row in the group is where its process ends, so
  * everything above that row is work and the notice — with anything rendered
  * below it — stays readable, no row stamped as the answer. A closing row that
  * sits ABOVE a prose step keeps the same meaning: prose the Turn never finalized
@@ -68,21 +68,56 @@
  * closing row at all falls back to the whole range, which is the interrupted
  * Turn whose work still belongs behind the disclosure.
  *
- * INJECTED CONTEXT BELONGS TO A TURN WITHOUT SAYING SO
+ * LAST, NOT FIRST, BECAUSE THE FOOTER CAN LAND MID-TURN
+ *
+ * The two failure notices are anchored on `turn/end`'s own seq and are therefore
+ * always the true end of their Turn. `turn-tail` is not: its anchor is
+ * synthesized as "the last message carrying text, +0.1", and a Turn whose model
+ * keeps calling tools after a visible message renders that footer in the MIDDLE
+ * of its own work. Measured live on turn 10, the rendered order was
+ *
+ *   user / control / context x3 / assistant-step(903) / turn-tail(903.1)
+ *   / tool-call x4 (904-911) / context x2 (916, 917) / turn-error(920)
+ *
+ * so bounding the fold at the first closing row stopped it at the footer and
+ * left four tool calls and two injected-context rows of the same Turn visible —
+ * while the Turn still reported itself folded. Taking the last closing row
+ * bounds the fold at the notice, which is where the work really ended. Nothing
+ * changes for a Turn whose only closing row is that footer: last and first are
+ * the same row, and everything below it keeps staying readable.
+ *
+ * INJECTED CONTEXT BELONGS TO THE TURN IT WAS INJECTED FOR
  *
  * Every other kind of work the model was fed carries its Turn in the seat's own
- * `data-chat-turn`. Injected context does not: a `context` node's Location is
- * unresolved (its `user/message` event carries no `turn`), so its seat renders
- * `data-chat-turn="null"` and it joins no group at all. Measured live, that is
- * exactly why those rows stayed on screen while the work beside them folded —
- * they were not "excluded", they were never part of any decision.
+ * `data-chat-turn` and folds by it. Injected context arrives in two shapes, and
+ * both must fold with the Turn they were injected for:
  *
- * `groupSeats` therefore assigns each turn-less `context` row to the Turn its
+ *   - a Turn-less `context` node — its Location is unresolved (its
+ *     `user/message` event carries no `turn`), so its seat renders
+ *     `data-chat-turn="null"` and it joins no group at all. Measured live, that
+ *     is exactly why those rows stayed on screen while the work beside them
+ *     folded — they were not "excluded", they were never part of any decision.
+ *
+ *   - a Turn-bearing `context` node — measured live on turn 8, the injection
+ *     event precedes the control anchor, so the seat names the Turn it was
+ *     injected for (`data-chat-turn="8"`) while its store seq (593) sits BELOW
+ *     the published `processStartSeq` (595.9). It belongs to the Turn it names
+ *     outright, with no re-parenting involved, and still the published sequence
+ *     range cannot reach it: the range opens above it.
+ *
+ * `groupSeats` therefore assigns each Turn-less `context` row to the Turn its
  * row precedes, which is the Turn it was injected for: a context row sits above
  * the Turn it opened. A trailing context row with no Turn below it stays with
- * the preceding Turn. That is enough for the hide set, because a row is only
- * ever hidden when it precedes the Turn's answer, and the answer always belongs
- * to the Turn itself.
+ * the preceding Turn. A Turn-bearing context row needs no such rule — it is
+ * already in the group whose Turn it names.
+ *
+ * Joining a group and joining the hide set are two different questions, and for
+ * injected context the second one is answered by KIND, never by position:
+ * `isContextRow` admits both shapes, so the marks channel hides a context row
+ * the seat never marked, and the sequence channel hides one whose seq falls
+ * below `processStartSeq`. That is enough for the hide set, because a row is
+ * only ever hidden when it precedes the Turn's answer, and the answer always
+ * belongs to the Turn itself.
  *
  * THE ANSWER'S FIRST LINE IS THE POINT
  *
@@ -106,11 +141,16 @@ export const INDEPENDENT_KINDS = new Set([
 ])
 
 /**
- * The kind of injected-context row this module re-parents onto a Turn.
+ * The kind of injected-context row that folds with the Turn it was injected for.
  *
- * Deliberately narrow: it is the kind whose Location is unresolved, so it has no
- * Turn of its own to be decided with. Every other kind still folds by its own
- * seat's Turn.
+ * Two shapes of it exist. A `context` row may be Turn-less — its Location is
+ * unresolved, so it has no Turn of its own and `groupSeats` re-parents it by
+ * position onto the Turn its row precedes — or it may already name the Turn it
+ * was injected for, in which case that Turn is its own. Both fold with that
+ * Turn, and both are admitted by `isContextRow` rather than by any position.
+ *
+ * Deliberately narrow: every other kind still folds by its own seat's Turn, and
+ * no other kind reaches the hidden set without an owning Turn or a member mark.
  */
 export const CONTEXT_KIND = 'context'
 
@@ -153,16 +193,23 @@ export function isIndependentKind(kind) {
 }
 
 /**
- * Whether one rendered row is injected context the fold must re-parent.
+ * Whether one rendered row is injected context that belongs to a Turn's fold.
+ *
+ * Two shapes exist, and both are the graph-memory injector's own doing: a
+ * context row whose Location is unresolved (no Turn attribute at all), and a
+ * context row that NAMES the Turn it was injected for — an injection event that
+ * precedes the control anchor lands its seq BELOW `processStartSeq`, so the
+ * sequence range can never reach it on its own. For either shape the group it
+ * renders in is the statement that it belongs to that Turn's process.
  *
  * Membership marks are deliberately not consulted: the shipped seat only marks
  * rows once its own window gate opens, and these rows are the ones that need the
  * fold most while that gate is shut.
  * @param row - plain row descriptor.
- * @returns whether the row is a turn-less injected-context row.
+ * @returns whether the row is an injected-context row the fold may hide.
  */
 export function isContextRow(row) {
-  return row.kind === CONTEXT_KIND && !Number.isSafeInteger(row.turn)
+  return row.kind === CONTEXT_KIND
 }
 
 /**
@@ -170,8 +217,11 @@ export function isContextRow(row) {
  *
  * The attribute is read defensively because the seat renders `data-chat-turn`
  * from a possibly undefined Turn: React drops an undefined attribute but writes
- * the string "null" for a null one, and either shape must fall through to the
- * re-parenting rule rather than create a fictitious group.
+ * the string "null" for a null one, and a seat that names no Turn either way must
+ * fall through to the re-parenting rule rather than create a fictitious group.
+ * A seat that does name one — injected context included, since the injector's
+ * event precedes the control anchor yet still carries the Turn it was injected
+ * for — is taken at its word.
  * @param element - the `data-chat-flow-kind` wrapper.
  * @returns the Turn number, or null when the seat names none.
  */
@@ -187,8 +237,8 @@ export function turnOfSeat(element) {
  *
  * Two sources agree here and both are the DOM's own statement: the shipped
  * seat's `data-turn-process-member` mark, and — for injected context, which the
- * seat cannot mark because it belongs to no Turn — this module's own
- * re-parenting by `groupSeats`.
+ * seat does not mark because the window it marks never covered those rows, whose
+ * injection precedes the control anchor — this module's own `isContextRow`.
  * @param row - plain row descriptor.
  * @returns whether the fold may hide the row.
  */
@@ -242,10 +292,12 @@ export function rowOfSeat(element, turn) {
  *
  * The group key is the seat's own `data-chat-turn`, so the returned groups are
  * exactly the sets a DOM pass walks — including rows the current store snapshot
- * has not described yet. An injected-context row names no Turn, and is appended
- * to the group of the Turn it precedes, which is the Turn it was injected for; a
- * trailing one stays with the Turn above it. Those rows are flushed together
- * with the next Turn-bearing seat, so DOM order survives the re-parenting.
+ * has not described yet. A Turn-bearing injected-context row joins the group its
+ * seat names, exactly like any other row. A Turn-less one names no Turn, and is
+ * appended to the group of the Turn it precedes, which is the Turn it was
+ * injected for; a trailing one stays with the Turn above it. Those rows are
+ * flushed together with the next Turn-bearing seat, so DOM order survives the
+ * re-parenting.
  *
  * Only injected context is re-parented. Any other Turn-less row is left out of
  * every group rather than credited to a Turn that never owned it.
@@ -254,7 +306,7 @@ export function rowOfSeat(element, turn) {
  */
 export function groupSeats(column) {
   const groups = new Map()
-  /** Injected-context rows still waiting for the Turn below them. */
+  /** Turn-less injected-context rows still waiting for the Turn below them. */
   let pending = []
   /** The last Turn seen, which adopts trailing context. */
   let previous = null
@@ -352,10 +404,11 @@ export function attachNodeData(rows, nodeAt) {
  * nothing at all, whatever range its published projection describes.
  *
  * Which source is tried is decided by the SEAT'S OWN MEMBERSHIP MARKS, never by
- * this module's re-parenting: an injected-context row is adopted into a Turn
- * whose seats never marked it, so one context row in a group is not a statement
- * that the marks describe this range. It joins the hidden set on either path; it
- * never picks the path.
+ * an injected-context row: the shipped seat marks neither shape of it — a
+ * Turn-less row belongs to no group it could mark, and a Turn-bearing one was
+ * injected above the control anchor, outside the window it marks — so one context
+ * row in a group is not a statement that the marks describe this range. It joins
+ * the hidden set on either path; it never picks the path.
  * @param rows - the Turn's rendered rows, in DOM order, with node data attached.
  * @param fold - the Turn's projection (`answerStep` / `answerAnchorSeq` /
  * `processStartSeq`).
@@ -371,12 +424,18 @@ export function foldTurn(rows, fold) {
 
   const seatsMarked = rows.filter(row => row.member === true && !isIndependentKind(row.kind))
   const ranged = seatsMarked.length > 0 ? null : projectedRange(rows, fold)
-  // The first closing row is where a Turn that produced no answer stops being
-  // process: the notice is published on `turn/end`, so nothing that follows it
-  // can be work still being done. A group that never closed on camera (the
-  // interrupted Turn) has no such row, and there its whole range is work — so
-  // the fallback boundary is the end of the group, not the start.
-  const closing = rows.findIndex(row => CLOSING_KINDS.has(row.kind))
+  // The LAST closing row is where the Turn stopped being process. Both notices
+  // are anchored on `turn/end`'s own seq, so a notice is always the real end of
+  // the Turn — but the footer's anchor is synthesized from "the last message
+  // carrying text, +0.1", which lands MID-TURN whenever the model keeps working
+  // after a visible message. Measured live on turn 10, the footer sat above four
+  // tool calls and two injected-context rows of its own Turn. Taking the first
+  // closing row bounded the fold at that footer and left them all on screen;
+  // taking the last bounds it at the notice below them, which is where the work
+  // actually ended. A group that never closed on camera (the interrupted Turn)
+  // has no such row, and there its whole range is work — so the fallback
+  // boundary is the end of the group, not the start.
+  const closing = rows.findLastIndex(row => CLOSING_KINDS.has(row.kind))
   const boundary = closing === -1 ? rows.length : closing
   const members = seatsMarked.length > 0 ? rows.filter(isProcessMember) : (ranged ?? [])
   const last = members.length === 0 ? 0 : rows.indexOf(members[members.length - 1])
@@ -396,10 +455,12 @@ export function foldTurn(rows, fold) {
  * The rows a published sequence range covers, in rendered order.
  *
  * The range is `[processStartSeq, answerAnchorSeq)` with independent kinds
- * excepted, which is the geometry the shipped fold uses. Re-parented context
- * rows are admitted without a position — their node resolves to no sequence —
- * because the group they were assigned to is the statement that they belong to
- * this Turn's process.
+ * excepted, which is the geometry the shipped fold uses. Injected context is
+ * admitted by KIND, without consulting its position: a Turn-less row resolves to
+ * no sequence at all, and a Turn-bearing one was injected above the control
+ * anchor, so its seq sits BELOW `processStartSeq` and the range would open above
+ * it. The group it renders in is the statement that it belongs to this Turn's
+ * process.
  * @param rows - the Turn's rendered rows, in DOM order.
  * @param fold - the Turn's projection.
  * @returns the rows to hide, or null when no range is published.

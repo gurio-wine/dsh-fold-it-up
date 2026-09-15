@@ -204,13 +204,13 @@ test('injected context is not an independent kind', () => {
   assert.equal(isIndependentKind('assistant-step'), false)
 })
 
-test('context rows are recognized by kind and by an absent Turn', () => {
+test('context rows are recognized by kind, with or without a Turn', () => {
   assert.equal(isContextRow({ kind: 'context', turn: Number.NaN }), true)
-  assert.equal(isContextRow({ kind: 'context', turn: 3 }), false)
+  assert.equal(isContextRow({ kind: 'context', turn: 3 }), true)
   assert.equal(isContextRow({ kind: 'user', turn: Number.NaN }), false)
   assert.equal(isProcessMember({ kind: 'assistant-step', member: true }), true)
   assert.equal(isProcessMember({ kind: 'assistant-step', member: false }), false)
-  // A context row is a member of the Turn it precedes, without any seat mark.
+  // A context row is a member of the Turn it belongs to, without any seat mark.
   assert.equal(isProcessMember({ kind: 'context', turn: Number.NaN, member: false }), true)
   assert.equal(isProcessMember({ kind: 'turn-tail', turn: 4, member: true }), false)
 })
@@ -804,9 +804,10 @@ test('a scroll target is never negative and never survives broken geometry', () 
 //
 // The notice row IS the boundary: `turn-error` / `turn-max-tokens` / `turn-tail`
 // exist only after the Turn has ended, and everything they announce must stay
-// readable. So when no answer row exists, the first closing row in the group is
-// the boundary, whether the rows carry member marks or only the published
-// sequence range, and no row is stamped as the answer.
+// readable. So when no answer row exists, a closing row in the group is the
+// boundary, whether the rows carry member marks or only the published sequence
+// range, and no row is stamped as the answer. Which one is the LAST one — see
+// the mid-turn footer section below for why the first is not enough.
 
 /**
  * The control row's store node for these shapes: a real Turn publishes
@@ -1044,4 +1045,179 @@ test('a whole pass hides only the process above an error notice', () => {
   )
   assert.equal(elements[3].getAttribute('hidden'), null, 'the notice stays readable')
   assert.equal(elements[4].dataset.foldItUpAnswer, undefined, 'below the notice is not the answer')
+})
+
+test('context injected with its own Turn seat folds with the process too', () => {
+  // Measured live (turn 8 of the fold-it-up session): graph-memory's injection
+  // lands a context seat that NAMES the Turn it was injected for
+  // (data-chat-turn="8"), and its store seq (593) sits BELOW the published
+  // processStartSeq (595.9) because the injection event precedes the control
+  // anchor. Neither of the fold's two channels would hide it: the turn-less
+  // re-parenting rule needs no Turn, and the sequence range needs seq >= start.
+  // A context row that carries the group's own Turn is part of that Turn's
+  // process exactly like a turn-less one, and must fold with it.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 8 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 8 }),
+    seat({ key: 'ctx-owned', kind: 'context', turn: 8 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 8 }),
+    seat({ key: 'err', kind: 'turn-error', turn: 8 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 8 }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 590, blocks: prose(3), turn: 8 })],
+    ['control', controlNode(595.9, 8, 595.9)],
+    // The injection's own seq sits below processStartSeq, as measured.
+    ['ctx-owned', node({ seq: 593, turn: 8 })],
+    ['s1', node({ seq: 596, step: 1, blocks: withTool(), turn: 8 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 595.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['ctx-owned', 's1'])
+
+  // The answer-bearing variant through a whole pass: the context row still
+  // folds, and the answer below it stays readable.
+  const { column: flow, elements } = dom([
+    { key: 'user', kind: 'user', turn: 8 },
+    { key: 'control', kind: 'turn-process', turn: 8 },
+    { key: 'ctx-owned', kind: 'context', turn: 8 },
+    { key: 'answer', kind: 'assistant-step', turn: 8 },
+    { key: 'tail', kind: 'turn-tail', turn: 8 },
+  ])
+  const answerNodes = new Map([
+    ['control', controlNode(595.9, 8, 595.9)],
+    ['ctx-owned', node({ seq: 593, turn: 8 })],
+    ['answer', node({ seq: 596, step: 1, blocks: prose(40), turn: 8 })],
+  ])
+  const published = foldColumn(flow, key => answerNodes.get(key), OPS)
+  assert.equal(published.turns.get(8).foldable, true)
+  assert.deepEqual(
+    elements.map(element => element.getAttribute('hidden')),
+    [null, null, 'until-found', null, null],
+  )
+})
+
+test('a member-marked turn still folds its injected context above it', () => {
+  // The marks channel has the same hole, measured on the same session: a turn
+  // whose rows are member-marked folds ONLY the marked rows, so a context seat
+  // graph-memory injected with that very Turn — a row the shipped seat never
+  // marks, because it is not part of the window it marked — stays on screen
+  // while the work around it folds. The injection precedes the control anchor,
+  // so the seq check would not save the fallback either; the row must join the
+  // hidden set on BOTH channels.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 9 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 9 }),
+    seat({ key: 'ctx-owned', kind: 'context', turn: 9 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 9, member: true }),
+    seat({ key: 't1', kind: 'tool-call', turn: 9, member: true }),
+    seat({ key: 'answer', kind: 'assistant-step', turn: 9 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 9, member: true }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 590, blocks: prose(3) })],
+    ['control', node({ seq: 595.9 })],
+    // Below the published processStartSeq, as measured live.
+    ['ctx-owned', node({ seq: 593, turn: 9 })],
+    ['s1', node({ seq: 596, step: 1, blocks: withTool() })],
+    ['t1', node({ seq: 597, step: 1 })],
+    ['answer', node({ seq: 598, step: 2, blocks: prose(240) })],
+    ['tail', node({ seq: 599 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended())
+  assert.equal(foldable, true)
+  assert.equal(answer.key, 'answer')
+  assert.deepEqual(hidden.map(row => row.key), ['ctx-owned', 's1', 't1'])
+})
+
+// --- the LAST closing row is the boundary, not the first ---------------------
+//
+// Measured live on turn 10 of the fold-it-up session. The footer (`turn-tail`) is
+// anchored at "the last message carrying text, +0.1", and a Turn can reach that
+// anchor MID-TURN: the rendered order was
+//
+//   user / control / context x3 / assistant-step(903) / turn-tail(903.1)
+//   / tool-call x4 (904-911) / context x2 (916, 917) / turn-error(920)
+//
+// Taking the FIRST closing row as the boundary put it on the footer, above four
+// tool calls and two injected-context rows that are still this Turn's work, and
+// the pass reported `foldable: true` while leaving six of the ten rows that
+// belong behind the disclosure on screen — the reported defect.
+//
+// The two notices are anchored on `turn/end`'s own seq, so they are the real end
+// of the Turn; the footer is the only closing kind that can sit mid-Turn. Taking
+// the LAST closing row therefore bounds the fold where the Turn actually ended,
+// and everything below that row keeps the old behaviour and stays readable.
+
+test('a mid-turn footer does not stop the fold short of the real notice', () => {
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 10 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 10 }),
+    seat({ key: 'ctx-898', kind: 'context', turn: 10 }),
+    seat({ key: 'ctx-900', kind: 'context', turn: 10 }),
+    seat({ key: 'ctx-901', kind: 'context', turn: 10 }),
+    seat({ key: 'step-903', kind: 'assistant-step', turn: 10 }),
+    seat({ key: 'tail-903.1', kind: 'turn-tail', turn: 10 }),
+    seat({ key: 'tc-904', kind: 'tool-call', turn: 10 }),
+    seat({ key: 'tc-907', kind: 'tool-call', turn: 10 }),
+    seat({ key: 'tc-909', kind: 'tool-call', turn: 10 }),
+    seat({ key: 'tc-911', kind: 'tool-call', turn: 10 }),
+    seat({ key: 'ctx-916', kind: 'context', turn: 10 }),
+    seat({ key: 'ctx-917', kind: 'context', turn: 10 }),
+    seat({ key: 'err-920', kind: 'turn-error', turn: 10 }),
+  ]
+  // No seat mark anywhere: this is the live shape, where the shipped window gate
+  // never opened (the Turn published no answer), so only the sequence range on the
+  // control row describes the work.
+  const nodes = new Map([
+    ['user', node({ seq: 899, blocks: prose(5), turn: 10 })],
+    ['control', controlNode(902.9, 10, 902.9)],
+    ['step-903', node({ seq: 903, step: 1, blocks: withTool(), turn: 10 })],
+    ['tc-904', node({ seq: 904, step: 1, turn: 10 })],
+    ['tc-907', node({ seq: 907, step: 1, turn: 10 })],
+    ['tc-909', node({ seq: 909, step: 1, turn: 10 })],
+    ['tc-911', node({ seq: 911, step: 1, turn: 10 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 902.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), [
+    'ctx-898', 'ctx-900', 'ctx-901', 'step-903',
+    'tc-904', 'tc-907', 'tc-909', 'tc-911', 'ctx-916', 'ctx-917',
+  ])
+  const kept = rows.filter(row => !hidden.includes(row)).map(row => row.key)
+  assert.deepEqual(kept, ['user', 'control', 'tail-903.1', 'err-920'])
+})
+
+test('the notice stays the boundary when a context row trails it', () => {
+  // The other half of the same rule: the boundary is the LAST closing row, not
+  // the end of the group. A context row injected after the notice is not part of
+  // the work being summarized — it arrived once the Turn was already over — and
+  // the row the notice belongs to must stay readable where it is.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 10 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 10 }),
+    seat({ key: 'step-903', kind: 'assistant-step', turn: 10 }),
+    seat({ key: 'tail-903.1', kind: 'turn-tail', turn: 10 }),
+    seat({ key: 'tc-904', kind: 'tool-call', turn: 10 }),
+    seat({ key: 'err-920', kind: 'turn-error', turn: 10 }),
+    seat({ key: 'ctx-921', kind: 'context' }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 899, blocks: prose(5), turn: 10 })],
+    ['control', controlNode(902.9, 10, 902.9)],
+    ['step-903', node({ seq: 903, step: 1, blocks: withTool(), turn: 10 })],
+    ['tc-904', node({ seq: 904, step: 1, turn: 10 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 902.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['step-903', 'tc-904'])
+  const kept = rows.filter(row => !hidden.includes(row)).map(row => row.key)
+  assert.deepEqual(kept, ['user', 'control', 'tail-903.1', 'err-920', 'ctx-921'])
 })

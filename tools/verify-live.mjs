@@ -324,18 +324,49 @@ const main = async () => {
           const assistants = mine.filter(row => row.kind === 'assistant-step')
           const independent = new Set(['system-prompt', 'user', 'steering', 'turn-error', 'turn-max-tokens', 'turn-tail'])
           const kept = new Set(['turn-process'])
+          // Process work the fold can reach on its own: a row that is neither an
+          // independent kind (the control row included) nor injected context.
+          // Context is excluded on purpose — foldTurn opens a range for it only
+          // beside rows some other channel already claimed (the seat's marks, or
+          // the published projection, which needs a control node), so a group
+          // holding nothing but context is never a Turn the fold owed something
+          // to.
+          const workRows = mine.filter(row => !independent.has(row.kind)
+            && row.kind !== 'context')
+          // The other channel foldTurn reads: rows the shipped seat marked as
+          // process members. Such a mark is the projection's own statement that
+          // this Turn has work, whether or not this pass rendered its control.
+          const markedRows = mine.filter(row => row.member === true && !independent.has(row.kind))
           // A Turn that ended without an answer publishes no answer anchor, so
-          // its first closing row is the fold boundary instead: rows below it
-          // are the notice's own tail, not work the fold left unfolded. -1 means
-          // the group has no closing row at all (still running).
-          const firstClosing = mine.findIndex(row => row.kind === 'turn-error'
+          // its LAST closing row is the fold boundary instead — the same row
+          // foldTurn bounds the fold at (a findLastIndex over CLOSING_KINDS).
+          // Both notices are anchored on turn/end's own seq while the footer's
+          // anchor is synthesized from the last text message and can land
+          // MID-TURN, so the last of the three is the real end; rows below it are
+          // the notice's own tail, not work the fold left unfolded. -1 means the
+          // group has no closing row at all (still running).
+          const lastClosing = mine.findLastIndex(row => row.kind === 'turn-error'
             || row.kind === 'turn-max-tokens'
             || row.kind === 'turn-tail')
           return {
             turn,
             rows: mine.length,
             contexts: mine.filter(row => row.kind === 'context').length,
-            contextLeaks: mine.filter(row => row.kind === 'context' && !row.hidden).length,
+            // The same boundary exemption the leak list makes, and for the same
+            // reason: injected context below the last closing row belongs to the
+            // notice's own tail, not to the work the fold should have taken.
+            contextLeaks: mine.filter((row, index) => (lastClosing === -1 || index < lastClosing)
+              && row.kind === 'context' && !row.hidden).length,
+            workRows: workRows.length,
+            markedRows: markedRows.length,
+            // Whether the fold owed this Turn anything: a control row to operate,
+            // or process rows for it to put behind one — by either channel
+            // foldTurn reads (the seat's marks, or the rendered work rows). A
+            // zero-work Turn (the instantly-failing QUOTA_EXCEEDED one) renders
+            // none of them, and keeps its injected context readable because there
+            // is no disclosure to restore it from — asserting a fold there
+            // asserts against the design.
+            foldable: controller !== undefined || workRows.length > 0 || markedRows.length > 0,
             controllers: controller === undefined ? 0 : 1,
             label: controller === undefined ? '' : (controller.textContent ?? '').trim().slice(0, 60),
             controllerHidden: controller === undefined ? null : controller.hasAttribute('hidden'),
@@ -349,10 +380,10 @@ const main = async () => {
             assistants: assistants.length,
             visibleAssistant: assistants.filter(row => !row.hidden).length,
             leaks: mine
-              .filter((row, index) => (firstClosing === -1 || index < firstClosing)
+              .filter((row, index) => (lastClosing === -1 || index < lastClosing)
                 && !row.hidden && !independent.has(row.kind) && !kept.has(row.kind) && row.answer !== true)
               .map(row => \`\${row.kind}#\${String(row.seq)}\`),
-            firstClosing,
+            lastClosing,
             errors: mine.filter(row => row.kind === 'turn-error' || row.kind === 'turn-max-tokens').length,
           }
         }),
@@ -396,7 +427,12 @@ const main = async () => {
       }
     })()`)
 
-    const foldable = inspected.turns.filter(turn => turn.rows > 2)
+    // Only Turns the fold owed something are asserted: a controller row to
+    // operate, or process rows to put behind one. A zero-work Turn — the
+    // instantly-failing QUOTA_EXCEEDED one — renders no `turn-process` row at
+    // all, so it has no disclosure to hide its (readable) injected context
+    // behind; demanding a controller or a fold there asserts against the design.
+    const foldable = inspected.turns.filter(turn => turn.foldable === true)
     const failures = []
     const isPlugin = expect === 'plugin'
     for (const turn of foldable) {
