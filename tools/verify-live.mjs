@@ -324,6 +324,13 @@ const main = async () => {
           const assistants = mine.filter(row => row.kind === 'assistant-step')
           const independent = new Set(['system-prompt', 'user', 'steering', 'turn-error', 'turn-max-tokens', 'turn-tail'])
           const kept = new Set(['turn-process'])
+          // A Turn that ended without an answer publishes no answer anchor, so
+          // its first closing row is the fold boundary instead: rows below it
+          // are the notice's own tail, not work the fold left unfolded. -1 means
+          // the group has no closing row at all (still running).
+          const firstClosing = mine.findIndex(row => row.kind === 'turn-error'
+            || row.kind === 'turn-max-tokens'
+            || row.kind === 'turn-tail')
           return {
             turn,
             rows: mine.length,
@@ -342,8 +349,10 @@ const main = async () => {
             assistants: assistants.length,
             visibleAssistant: assistants.filter(row => !row.hidden).length,
             leaks: mine
-              .filter(row => !row.hidden && !independent.has(row.kind) && !kept.has(row.kind) && row.answer !== true)
+              .filter((row, index) => (firstClosing === -1 || index < firstClosing)
+                && !row.hidden && !independent.has(row.kind) && !kept.has(row.kind) && row.answer !== true)
               .map(row => \`\${row.kind}#\${String(row.seq)}\`),
+            firstClosing,
             errors: mine.filter(row => row.kind === 'turn-error' || row.kind === 'turn-max-tokens').length,
           }
         }),
@@ -397,10 +406,19 @@ const main = async () => {
         if (turn.hiddenUntilFound !== turn.hidden) {
           failures.push(`turn ${String(turn.turn)}: hidden rows do not use hidden="until-found"`)
         }
-        if (turn.answers === 0) failures.push(`turn ${String(turn.turn)}: answer row not marked`)
-        if (turn.answers > 1) failures.push(`turn ${String(turn.turn)}: ${String(turn.answers)} answer rows marked`)
-        if (turn.visibleAssistant === 0) failures.push(`turn ${String(turn.turn)}: no visible assistant row`)
-        if (turn.visibleAssistant > 1) {
+        // Which rows a Turn must keep readable is the fold's own decision, so
+        // the assertions split on its marking rather than on the notice kinds:
+        // a Turn that marked an answer keeps exactly that one row, while an
+        // answerless fold — a Turn that ended on an error, on max tokens, or
+        // interrupted without ever finalizing prose — marks nothing and keeps
+        // nothing. (An error-ended Turn whose last finalized step was prose
+        // still marks that answer, which is why the notice kinds alone cannot
+        // pick the branch; an unmarked visible process row fails the leak check
+        // either way.)
+        if (turn.answers > 1) {
+          failures.push(`turn ${String(turn.turn)}: ${String(turn.answers)} answer rows marked`)
+        }
+        if (turn.answers === 1 && turn.visibleAssistant !== 1) {
           failures.push(`turn ${String(turn.turn)}: ${String(turn.visibleAssistant)} assistant rows visible, expected the answer alone`)
         }
         // Either owner may render the row, but it IS the control: a hidden one
@@ -511,6 +529,7 @@ const main = async () => {
           const rows = rowsOf().filter(row => row.turn === ${String(target.turn)} || row.owner === ${String(target.turn)})
           return {
             hidden: rows.filter(row => row.hidden).length,
+            visibleRows: rows.filter(row => !row.hidden).length,
             visibleAssistant: rows.filter(row => row.kind === 'assistant-step' && !row.hidden).length,
             visibleContext: rows.filter(row => row.kind === 'context' && !row.hidden).length,
             contexts: rows.filter(row => row.kind === 'context').length,
@@ -529,8 +548,12 @@ const main = async () => {
         if (expanded.hidden !== 0) {
           failures.push(`toggle: expanding turn ${String(target.turn)} left ${String(expanded.hidden)} row(s) hidden`)
         }
-        if (expanded.visibleAssistant <= 1 && expanded.visibleContext === 0 && target.foldedRows > 0) {
-          failures.push(`toggle: expanding turn ${String(target.turn)} revealed no process rows`)
+        // "The process came back" is measured on rows, not on assistant or
+        // context counts: a Turn that ended on a tool call folds nothing but
+        // tool rows, and an error-ended Turn's assistant rows are gone from
+        // the DOM entirely, so neither count can prove the reveal.
+        if (expanded.visibleRows !== target.rows) {
+          failures.push(`toggle: expanding turn ${String(target.turn)} revealed ${String(expanded.visibleRows)}/${String(target.rows)} row(s)`)
         }
         // The half a folded-only assertion cannot see: expanding must give the
         // injected context back, or the fold would have deleted it.
@@ -543,7 +566,9 @@ const main = async () => {
         if (collapsed.hidden !== target.hidden) {
           failures.push(`toggle: collapsing turn ${String(target.turn)} hid ${String(collapsed.hidden)} row(s), expected ${String(target.hidden)}`)
         }
-        if (collapsed.visibleAssistant !== 1) {
+        // An answerless fold has no answer to come back to, so 0 is expected
+        // there; a Turn that marked one must show exactly it.
+        if (target.answers === 1 && collapsed.visibleAssistant !== 1) {
           failures.push(`toggle: collapsing turn ${String(target.turn)} left ${String(collapsed.visibleAssistant)} assistant rows visible`)
         }
       }

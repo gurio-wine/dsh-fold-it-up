@@ -536,8 +536,13 @@ test('a turn the seat has not marked folds nothing', () => {
   assert.equal(foldable, false)
 })
 
-test('a turn with no prose answer keeps its whole process visible', () => {
-  // An interrupted turn: process marks exist, but nothing summarizes them.
+test('an interrupted turn folds its process even though no row answers it', () => {
+  // An interrupted turn: process marks exist, and nothing summarizes them —
+  // the provider failed, or the stop landed on a tool call, so the projection
+  // names no answer at all. New semantics: the Turn is still OVER, so its work
+  // belongs behind the disclosure instead of staying on screen. The marks name
+  // the range to hide, and with no answer to keep readable the whole marked
+  // range folds — no row is stamped as the answer.
   const seats = [
     seat({ key: 'user', kind: 'user', turn: 1 }),
     seat({ key: 'control', kind: 'turn-process', turn: 1 }),
@@ -551,9 +556,10 @@ test('a turn with no prose answer keeps its whole process visible', () => {
     ['t1', node({ seq: 3, step: 1 })],
   ])
   const rows = rowsOf(seats, nodes)[0]
-  const { hidden, foldable } = foldTurn(rows, ended())
-  assert.equal(foldable, false)
-  assert.deepEqual(hidden, [])
+  const { hidden, answer, foldable } = foldTurn(rows, ended())
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['a1', 't1'])
 })
 
 test('independent kinds inside the range are never hidden', () => {
@@ -784,4 +790,258 @@ test('a scroll target is never negative and never survives broken geometry', () 
   assert.deepEqual(autoScrollTarget({ closed: true }, geometry({ scrollTop: 0, questionTop: -900 })), { top: 0 })
   assert.equal(autoScrollTarget({ closed: true }, geometry({ scrollTop: Number.NaN })), null)
   assert.equal(autoScrollTarget({ closed: true }, null), null)
+})
+
+// --- an error-ended Turn folds with the notice as its boundary ---------------
+//
+// A Turn that ends because the provider failed (or because max tokens were hit)
+// publishes no answer: the official projection leaves `answerStep` and
+// `answerAnchorSeq` null, and the seat marks no `data-turn-process-member`
+// either. The old decision therefore had nothing to resolve — `lastProse` only
+// looks downward from the last in-range row and an error Turn's last row is a
+// tool call or a pure-reasoning step — so the Turn stayed wide open and its
+// whole process was dumped on the reader.
+//
+// The notice row IS the boundary: `turn-error` / `turn-max-tokens` / `turn-tail`
+// exist only after the Turn has ended, and everything they announce must stay
+// readable. So when no answer row exists, the first closing row in the group is
+// the boundary, whether the rows carry member marks or only the published
+// sequence range, and no row is stamped as the answer.
+
+/**
+ * The control row's store node for these shapes: a real Turn publishes
+ * `processStartSeq` on it and leaves both answer fields null.
+ * @param seq - the control's anchor sequence.
+ * @param turn - the Turn number.
+ * @param processStartSeq - the published start of the process range.
+ * @returns the node shape `attachNodeData` reads.
+ */
+function controlNode(seq, turn, processStartSeq) {
+  return {
+    anchorSeq: seq,
+    location: { kind: 'turn', turn: { turn } },
+    data: { processStartSeq, answerStep: null, answerAnchorSeq: null },
+  }
+}
+
+test('an error-ended turn folds its process and keeps the notice readable', () => {
+  // Z1: prose+tool call work, then a step that only reasoned, then the error.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 't1', kind: 'tool-call', turn: 7, member: true }),
+    seat({ key: 's2', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 'err', kind: 'turn-error', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 4, blocks: prose(3), turn: 7 })],
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: [{ type: 'reasoning', text: 'x'.repeat(300) }], turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['s1', 't1', 's2'])
+
+  // The same group through a whole pass: no row is stamped as the answer, and
+  // the notice rows below the boundary stay visible.
+  const view = dom(seats.map(entry => ({
+    key: entry.getAttribute('data-chat-anchor-key'),
+    kind: entry.getAttribute(KIND_ATTRIBUTE),
+    turn: Number(entry.getAttribute('data-chat-turn')),
+    member: entry.hasAttribute(MEMBER_ATTRIBUTE),
+  })))
+  const published = foldColumn(view.column, key => nodes.get(key), OPS)
+  assert.equal(published.turns.get(7).foldable, true)
+  assert.equal(published.turns.get(7).answerKey, null)
+  assert.deepEqual(
+    view.elements.map(element => element.getAttribute('hidden')),
+    [null, null, 'until-found', 'until-found', 'until-found', null, null],
+  )
+})
+
+test('a trailing context row does not hijack an error-ended turn', () => {
+  // Z5: the same group with a turn-less context row appended. `groupSeats` adopts
+  // it into this Turn, so it is a process member — but a mark anywhere in the
+  // group must not divert the decision away from the notice boundary.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 't1', kind: 'tool-call', turn: 7, member: true }),
+    seat({ key: 's2', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 'err', kind: 'turn-error', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+    seat({ key: 'ctx', kind: 'context' }),
+  ]
+  const nodes = new Map([
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: [{ type: 'reasoning', text: 'x'.repeat(300) }], turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  // The context row is below the notice: it stays readable.
+  assert.deepEqual(hidden.map(row => row.key), ['s1', 't1', 's2'])
+})
+
+test('leading injected context folds with the error-ended turn it precedes', () => {
+  // Q2: two context rows injected for this Turn, then the Turn itself. They are
+  // above the notice, so they are part of the process that folds.
+  const seats = [
+    seat({ key: 'ctx-a', kind: 'context' }),
+    seat({ key: 'ctx-b', kind: 'context' }),
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 'err', kind: 'turn-error', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 4, blocks: prose(3), turn: 7 })],
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['ctx-a', 'ctx-b', 's1'])
+  const kept = rows.filter(row => !hidden.includes(row)).map(row => row.key)
+  assert.deepEqual(kept, ['user', 'control', 'err', 'tail'])
+})
+
+test('an unmarked error turn with injected context folds its work too', () => {
+  // The live shape of the defect: the shipped window gate never opens without
+  // a published answer, so a real error Turn carries NO seat marks at all — and
+  // the session has context injected above it. A context row must not become
+  // the whole marked range: the range still comes from the published sequence,
+  // the context rows join it, and the notice bounds everything.
+  const seats = [
+    seat({ key: 'ctx-a', kind: 'context' }),
+    seat({ key: 'ctx-b', kind: 'context' }),
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7 }),
+    seat({ key: 't1', kind: 'tool-call', turn: 7 }),
+    seat({ key: 's2', kind: 'assistant-step', turn: 7 }),
+    seat({ key: 'err', kind: 'turn-error', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+  ]
+  const nodes = new Map([
+    ['user', node({ seq: 4, blocks: prose(3), turn: 7 })],
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: [{ type: 'reasoning', text: 'x'.repeat(300) }], turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['ctx-a', 'ctx-b', 's1', 't1', 's2'])
+})
+
+test('a max-tokens notice is as good a boundary as an error notice', () => {
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 't1', kind: 'tool-call', turn: 7, member: true }),
+    seat({ key: 's2', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 'note', kind: 'turn-max-tokens', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+  ]
+  const nodes = new Map([
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: [{ type: 'reasoning', text: 'x'.repeat(300) }], turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer, null)
+  assert.deepEqual(hidden.map(row => row.key), ['s1', 't1', 's2'])
+})
+
+test('the closing gate is not relaxed when the turn has no notice yet', () => {
+  // The same Z1 shape WITHOUT a closing row: the group is still running, so the
+  // absence of an answer must not become a reason to fold anything.
+  const { column: flow, elements } = dom([
+    { key: 'user', kind: 'user', turn: 7 },
+    { key: 'control', kind: 'turn-process', turn: 7 },
+    { key: 's1', kind: 'assistant-step', turn: 7, member: true },
+    { key: 't1', kind: 'tool-call', turn: 7, member: true },
+    { key: 's2', kind: 'assistant-step', turn: 7, member: true },
+  ])
+  const nodes = new Map([
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: [{ type: 'reasoning', text: 'x'.repeat(300) }], turn: 7 })],
+  ])
+  const published = foldColumn(flow, key => nodes.get(key), OPS)
+  assert.equal(published.turns.get(7).closed, false)
+  assert.equal(published.turns.get(7).foldable, false)
+  assert.deepEqual(elements.map(element => element.getAttribute('hidden')), [null, null, null, null, null])
+})
+
+test('a real answer still wins over the closing boundary', () => {
+  // The notice boundary is a fallback, not a new default: when a step really
+  // answered, that row is the answer and the process above it is what folds.
+  const seats = [
+    seat({ key: 'user', kind: 'user', turn: 7 }),
+    seat({ key: 'control', kind: 'turn-process', turn: 7 }),
+    seat({ key: 's1', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 't1', kind: 'tool-call', turn: 7, member: true }),
+    seat({ key: 's2', kind: 'assistant-step', turn: 7, member: true }),
+    seat({ key: 'err', kind: 'turn-error', turn: 7 }),
+    seat({ key: 'tail', kind: 'turn-tail', turn: 7 }),
+  ]
+  const nodes = new Map([
+    ['control', controlNode(4.9, 7, 4.9)],
+    ['s1', node({ seq: 5, step: 1, blocks: withTool(), turn: 7 })],
+    ['t1', node({ seq: 6, step: 1, turn: 7 })],
+    ['s2', node({ seq: 7, step: 2, blocks: prose(40), turn: 7 })],
+  ])
+  const rows = rowsOf(seats, nodes)[0]
+  const { answer, hidden, foldable } = foldTurn(rows, ended({ answerStep: 2, answerAnchorSeq: 7, processStartSeq: 4.9 }))
+  assert.equal(foldable, true)
+  assert.equal(answer.key, 's2')
+  assert.deepEqual(hidden.map(row => row.key), ['s1', 't1'])
+})
+
+test('a whole pass hides only the process above an error notice', () => {
+  // The end-to-end shape a reader sees: the notice arrives, the answer row under
+  // it (if any) is NOT the Turn's answer, and only the work above the notice is
+  // behind the disclosure.
+  const { column: flow, elements } = dom([
+    { key: 'user', kind: 'user', turn: 3 },
+    { key: 'control', kind: 'turn-process', turn: 3 },
+    { key: 'p0', kind: 'assistant-step', turn: 3 },
+    { key: 'note', kind: 'turn-error', turn: 3 },
+    { key: 'answer', kind: 'assistant-step', turn: 3 },
+  ])
+  const nodes = new Map([
+    ['control', controlNode(1, 3, 1)],
+    ['p0', node({ seq: 2, step: 1, blocks: withTool(), turn: 3 })],
+    ['answer', node({ seq: 3, step: 2, blocks: prose(30), turn: 3 })],
+  ])
+  const published = foldColumn(flow, key => nodes.get(key), OPS)
+  assert.equal(published.turns.get(3).foldable, true)
+  assert.deepEqual(
+    elements.map(element => element.getAttribute('hidden')),
+    [null, null, 'until-found', null, null],
+  )
+  assert.equal(elements[3].getAttribute('hidden'), null, 'the notice stays readable')
+  assert.equal(elements[4].dataset.foldItUpAnswer, undefined, 'below the notice is not the answer')
 })

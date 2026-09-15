@@ -49,6 +49,25 @@
  * `turnClosed`. That is the gate this module applies, and it is why the fold
  * appears only once the turn is really over.
  *
+ * A FAILED TURN HAS NO ANSWER, AND ITS NOTICE IS THE BOUNDARY
+ *
+ * Folding used to require an answer row: the process range was hidden only up to
+ * the finalized reply the range was published against. A Turn that ends because
+ * the provider failed, or because max tokens were hit, publishes neither
+ * `answerStep` nor `answerAnchorSeq` — and in the live shape marks no process
+ * rows either, because the shipped window gate never opens without an answer. So
+ * both paths fell through to `foldable: false` and the whole tangle stayed on
+ * screen: the loudest failure was the one case the fold refused to collapse.
+ *
+ * Deciding those needs only the fact that already gates this module: the Turn is
+ * closed. The first closing row in the group is where its process ends, so
+ * everything above that row is work and the notice — with anything rendered
+ * below it — stays readable, no row stamped as the answer. A closing row that
+ * sits ABOVE a prose step keeps the same meaning: prose the Turn never finalized
+ * is not its answer, and the notice still bounds the fold. Only a group with no
+ * closing row at all falls back to the whole range, which is the interrupted
+ * Turn whose work still belongs behind the disclosure.
+ *
  * INJECTED CONTEXT BELONGS TO A TURN WITHOUT SAYING SO
  *
  * Every other kind of work the model was fed carries its Turn in the seat's own
@@ -331,6 +350,12 @@ export function attachNodeData(rows, nodeAt) {
  * rendered group's, which is what keeps a decision applicable to the DOM it is
  * about to be applied to. A group whose rows say it is still running folds
  * nothing at all, whatever range its published projection describes.
+ *
+ * Which source is tried is decided by the SEAT'S OWN MEMBERSHIP MARKS, never by
+ * this module's re-parenting: an injected-context row is adopted into a Turn
+ * whose seats never marked it, so one context row in a group is not a statement
+ * that the marks describe this range. It joins the hidden set on either path; it
+ * never picks the path.
  * @param rows - the Turn's rendered rows, in DOM order, with node data attached.
  * @param fold - the Turn's projection (`answerStep` / `answerAnchorSeq` /
  * `processStartSeq`).
@@ -344,21 +369,27 @@ export function foldTurn(rows, fold) {
   // boundary that has already moved. Fold nothing until the Turn has ended.
   if (fold.closed !== true) return { answer: null, hidden: [], foldable: false }
 
-  const marked = rows.filter(isProcessMember)
-  if (marked.length > 0) {
-    const answer = answerFor(rows, fold) ?? lastProse(rows, rows.indexOf(marked[marked.length - 1]))
-    if (answer !== null) return { answer, hidden: before(rows, marked, answer), foldable: true }
-    // A Turn with marked process but nothing to summarize: fold nothing rather
-    // than leave the reader with no way back to the rows.
-    return { answer: null, hidden: [], foldable: false }
-  }
-
-  const ranged = projectedRange(rows, fold)
-  if (ranged === null) return { answer: null, hidden: [], foldable: false }
-  const answer = ranged.answer
-    ?? lastProse(rows, rows.indexOf(ranged.hidden[ranged.hidden.length - 1]))
-  if (answer === null) return { answer: null, hidden: [], foldable: false }
-  return { answer, hidden: before(rows, ranged.hidden, answer), foldable: true }
+  const seatsMarked = rows.filter(row => row.member === true && !isIndependentKind(row.kind))
+  const ranged = seatsMarked.length > 0 ? null : projectedRange(rows, fold)
+  // The first closing row is where a Turn that produced no answer stops being
+  // process: the notice is published on `turn/end`, so nothing that follows it
+  // can be work still being done. A group that never closed on camera (the
+  // interrupted Turn) has no such row, and there its whole range is work — so
+  // the fallback boundary is the end of the group, not the start.
+  const closing = rows.findIndex(row => CLOSING_KINDS.has(row.kind))
+  const boundary = closing === -1 ? rows.length : closing
+  const members = seatsMarked.length > 0 ? rows.filter(isProcessMember) : (ranged ?? [])
+  const last = members.length === 0 ? 0 : rows.indexOf(members[members.length - 1])
+  const candidate = answerFor(rows, fold) ?? lastProse(rows, last)
+  // A reply that renders BELOW the notice is not this Turn's answer: the Turn
+  // had already given up before writing it. Keep the notice as the boundary and
+  // leave that row readable where it is.
+  const answer = candidate !== null && rows.indexOf(candidate) < boundary ? candidate : null
+  const stop = answer === null ? boundary : rows.indexOf(answer)
+  const hidden = members.filter(row => rows.indexOf(row) < stop)
+  // Nothing to put behind the disclosure is nothing to disclose.
+  if (hidden.length === 0) return { answer: null, hidden: [], foldable: false }
+  return { answer, hidden, foldable: true }
 }
 
 /**
@@ -371,7 +402,7 @@ export function foldTurn(rows, fold) {
  * this Turn's process.
  * @param rows - the Turn's rendered rows, in DOM order.
  * @param fold - the Turn's projection.
- * @returns `{ hidden, answer }`, or null when no range is published.
+ * @returns the rows to hide, or null when no range is published.
  */
 function projectedRange(rows, fold) {
   const start = fold.processStartSeq
@@ -381,7 +412,7 @@ function projectedRange(rows, fold) {
     && (isContextRow(row)
       || (row.seq !== null && row.seq >= start && row.seq < boundary)))
   if (hidden.length === 0) return null
-  return { hidden, answer: answerFor(rows, fold) }
+  return hidden
 }
 
 /**
@@ -418,18 +449,6 @@ function answerFor(rows, fold) {
 function lastProse(rows, from) {
   const below = rows.slice(Math.max(0, from)).filter(isAnswerRow)
   return below.length === 0 ? null : below[below.length - 1]
-}
-
-/**
- * The members of a range that precede one row.
- * @param rows - the Turn's rendered rows, in DOM order.
- * @param members - candidate rows to hide.
- * @param answer - the row that must stay readable.
- * @returns the rows to hide.
- */
-function before(rows, members, answer) {
-  const boundary = rows.indexOf(answer)
-  return members.filter(row => rows.indexOf(row) < boundary)
 }
 
 /**
