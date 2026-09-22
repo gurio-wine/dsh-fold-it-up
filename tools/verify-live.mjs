@@ -370,6 +370,20 @@ const main = async () => {
             controllers: controller === undefined ? 0 : 1,
             label: controller === undefined ? '' : (controller.textContent ?? '').trim().slice(0, 60),
             controllerHidden: controller === undefined ? null : controller.hasAttribute('hidden'),
+            // The control row as it actually renders: a bare button (a stale
+            // class hash, a dead stylesheet) loses its geometry and its pointer
+            // cursor, which is what "unstyled" looks like from the DOM.
+            rowBox: (() => {
+              if (controller === undefined) return null
+              const button = controller.querySelector('[data-turn-process]') ?? controller
+              const style = getComputedStyle(button)
+              return {
+                tag: button.tagName,
+                height: Math.round(button.getBoundingClientRect().height),
+                cursor: style.cursor,
+                fallback: button.dataset.foldItUpRow === 'fallback',
+              }
+            })(),
             hidden: hidden.length,
             hiddenUntilFound: hidden.filter(row => row.hiddenUntilFound).length,
             hiddenKinds: [...new Set(hidden.map(row => row.kind))],
@@ -427,6 +441,8 @@ const main = async () => {
       }
     })()`)
 
+    const pluginTrace = await evaluate('globalThis.__FOLDITUP__ ?? null')
+
     // Only Turns the fold owed something are asserted: a controller row to
     // operate, or process rows to put behind one. A zero-work Turn — the
     // instantly-failing QUOTA_EXCEEDED one — renders no `turn-process` row at
@@ -435,6 +451,20 @@ const main = async () => {
     const foldable = inspected.turns.filter(turn => turn.foldable === true)
     const failures = []
     const isPlugin = expect === 'plugin'
+    // Which renderer produced the control rows: the probe records the source,
+    // and 'shipped' is this plugin's promise — the product's own row, not an
+    // imitation. A silent fallback here is exactly the kind of link rot (a
+    // stale class hash, a changed registry shape) this assertion exists to
+    // catch before a human notices a naked button.
+    if (isPlugin) {
+      const rowEvents = (pluginTrace?.events ?? []).filter(event => event.kind === 'row')
+      const lastRow = rowEvents.at(-1)
+      if (lastRow === undefined) {
+        failures.push('no row-source probe event: the disclosure row never rendered')
+      } else if (lastRow.source !== 'shipped') {
+        failures.push(`fold row is '${String(lastRow.source)}', expected the shipped renderer`)
+      }
+    }
     for (const turn of foldable) {
       if (isPlugin) {
         if (turn.controllers === 0) failures.push(`turn ${String(turn.turn)}: no fold controller rendered`)
@@ -461,6 +491,16 @@ const main = async () => {
         // would strand the turn with no way back.
         if (turn.controllerHidden === true) {
           failures.push(`turn ${String(turn.turn)}: the fold controller hid itself`)
+        }
+        // Styled-or-bust: an unstyled control collapses toward its text height
+        // and loses the pointer cursor, whichever owner rendered it.
+        if (turn.rowBox !== null) {
+          if (turn.rowBox.height < 24 || turn.rowBox.height > 48) {
+            failures.push(`turn ${String(turn.turn)}: fold control row is ${String(turn.rowBox.height)}px tall, expected a styled ~33px row`)
+          }
+          if (turn.rowBox.cursor !== 'pointer') {
+            failures.push(`turn ${String(turn.turn)}: fold control cursor is ${String(turn.rowBox.cursor)}, expected pointer`)
+          }
         }
         // Injected context the Turn adopted must fold with the work. This is the
         // assertion the previous version could not make: `context` was listed as
@@ -615,7 +655,7 @@ const main = async () => {
       session: args.session ?? null,
       bootEntry: (boot.entries ?? []).includes('dsh-fold-it-up'),
       bootEntries: boot.entries?.length ?? 0,
-      pluginTrace: await evaluate('globalThis.__FOLDITUP__ ?? null'),
+      pluginTrace,
       finalState,
       toggleReport,
       turns: inspected.turns,

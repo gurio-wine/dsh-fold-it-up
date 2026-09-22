@@ -227,3 +227,17 @@ test('the node half is inert and resolvable', async () => {
   assert.equal(typeof host.apply, 'function')
   assert.equal(host.apply(), undefined)
 })
+
+test('the retired source-map compile path is gone and the built-in row is self-styled', () => {
+  const source = readFileSync(join(root, 'client.js'), 'utf8')
+  // The built-in row must carry the package's OWN classes: a product
+  // CSS-module hash in here is exactly how it went stale once already.
+  assert.match(source, /dsh-fold-it-up-root/u, 'the built-in row carries the package stylesheet')
+  assert.match(source, /dsh-fold-it-up-chevron/u, 'the built-in chevron carries the package stylesheet')
+  assert.doesNotMatch(source, /jUC0fW/u, 'no product CSS-module hash may survive in the bundle')
+  // The runtime compile path (fetch the map, rewrite imports, evaluate the
+  // TSX) is retired: the slot ledger yields the shipped renderer instead.
+  assert.doesNotMatch(source, /compileDisclosureRow|compileRowSource|ROW_CLASSES/u)
+  assert.doesNotMatch(source, /sourcesContent|sourceMappingURL/u)
+  assert.doesNotMatch(source, /new Function/u)
+})

@@ -29,9 +29,9 @@
  *     elements the owner already uses for it — `hidden="until-found"`, which
  *     keeps both the column rhythm ("hidden and empty Seats do not contribute
  *     spacing") and find-on-page working;
- *   - the row itself is the SHIPPED renderer, compiled at runtime from the
- *     source map the page already fetched, so the wording, theme styling and
- *     geometry stay the product's rather than an imitation;
+ *   - the row itself is the SHIPPED renderer, borrowed from the slot ledger
+ *     the product registered it on (`StoredEntry.component`), so the wording,
+ *     theme styling and geometry stay the product's rather than an imitation;
  *   - expansion state lives in this entry's own store, whose default — every
  *     turn collapsed — is what makes a fresh page, a session switch and a
  *     brand-new install all come up folded.
@@ -47,9 +47,6 @@ import { autoScrollTarget, foldColumn } from './logic.js'
 
 /** Package name; also the module-table key this bundle registers under. */
 const PACKAGE = 'dsh-fold-it-up'
-
-/** The Chat package whose renderer this bundle shadows and reuses. */
-const CHAT_PACKAGE = '@deepseek-ai/dsh-client-ui-chat'
 
 /** The Chat package's locale namespace, for the shipped row's labels. */
 const CHAT_NS = 'chat'
@@ -137,18 +134,10 @@ const css = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dsh-fold-it-up-count {
-  flex: none;
-  margin-left: 8px;
-  font-size: var(--dsh-content-font-size-secondary, 13px);
-  line-height: 20px;
-  font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-caption);
-}
 .dsh-fold-it-up-chevron {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   margin-left: 6px;
   color: var(--dsw-alias-label-tertiary);
   transform: rotate(-90deg);
@@ -765,10 +754,11 @@ const RowHost = React.memo(function RowHost({ children, anchorRef }) {
 /**
  * One turn's disclosure row, and the DOM owner of that turn's hidden range.
  *
- * The row itself is the SHIPPED disclosure renderer, compiled at runtime from
- * the source map the page already downloaded. That keeps the label wording, the
- * theme styling and the geometry identical to the product instead of imitating
- * them; `fallbackRow` takes over if that source is ever unavailable.
+ * The row itself is the SHIPPED disclosure renderer, borrowed from the slot
+ * ledger's stored entry — the component the Chat package registered on this
+ * very key. That keeps the label wording, the theme styling and the geometry
+ * identical to the product instead of imitating them, with its CSS-module
+ * classes already bound; `fallbackRow` takes over if that entry is unreachable.
  *
  * The owner decides nothing here. Rows are read from the rendered column in the
  * same pass that applies the result, because a Chat store snapshot and the DOM
@@ -846,33 +836,81 @@ function FoldRow({ node, useChat, useStore, actions, t }) {
 }
 
 /**
- * The shipped disclosure row, compiled once from the page's own source map.
+ * The shipped disclosure row, borrowed from the slot ledger.
  *
- * Reusing the product's renderer keeps the label wording (locale keys already
- * registered by the Chat package), the theme tokens and the geometry exact; the
- * compiled module only ever produces this one keyed cell.
- * @returns the shipped renderer, or null when its source is unavailable.
+ * The Chat package registers its own `turn-process` component on the same key
+ * this entry shadows, and the ledger keeps that component on its stored entry
+ * (`StoredEntry.component`). Reading it there reuses the product's renderer —
+ * its CSS-module classes already bound — without fetching or compiling
+ * anything; `fallbackRow` takes over when the ledger cannot yield it.
+ * @returns the shipped renderer, or null when the ledger does not hold it (yet).
  */
 function useDisclosureRow() {
-  const [Row, setRow] = React.useState(() => compiledRow)
+  const [, bump] = React.useState(0)
+  const Row = resolveShippedRow()
   React.useEffect(() => {
-    if (compiledRow !== null || compiling) return undefined
-    compiling = true
-    void compileDisclosureRow().then((component) => {
-      if (component !== null) {
-        compiledRow = component
-        setRow(() => component)
-      }
-    })
-    return undefined
-  }, [Row])
+    // The shipped entry can register after this one, so a null answer is
+    // retried briefly rather than freezing the fallback in place. The budget
+    // is module state: one shared countdown, not one per row.
+    if (Row !== null || rowRetries <= 0) return undefined
+    rowRetries -= 1
+    const timer = setTimeout(() => { bump(tick => tick + 1) }, 250)
+    return () => { clearTimeout(timer) }
+  })
   return Row
 }
 
-/** Cache of the compiled shipped renderer; null until (or unless) it resolves. */
-let compiledRow = null
-/** Whether a compile attempt is already in flight. */
-let compiling = false
+/** Cache of the shipped row read off the slot ledger; null until it resolves. */
+let shippedRow = null
+/** Shared retry budget while the shipped entry has not registered yet. */
+let rowRetries = 20
+/** Last row source reported to the probe, so a fallback-to-shipped swap is visible. */
+let rowSource = null
+/** The slot registry this entry registered on, captured at mount. */
+let ledger = null
+/** This entry's own component, so the ledger scan can skip it. */
+let ownRow = null
+
+/**
+ * Resolve the product's own `turn-process` renderer out of the slot ledger.
+ *
+ * The shipped entry is found by its key and by NOT being this entry's own
+ * component — neither a priority value nor a registrant name has to be assumed,
+ * which is also what keeps this working when either changes.
+ * @returns the shipped component, or null when the ledger does not hold it.
+ */
+function resolveShippedRow() {
+  if (shippedRow !== null) return shippedRow
+  if (ledger === null) return null
+  let entries
+  try {
+    entries = ledger.entriesOfSlot?.('conversation.chat.node') ?? []
+  } catch {
+    // An unreadable ledger is a fallback, not a crash.
+    return null
+  }
+  for (const entry of entries) {
+    const component = entry?.component
+    if (component === undefined || component === null || component === ownRow) continue
+    if (entry.options?.key !== 'turn-process') continue
+    if (typeof component !== 'function' && typeof component !== 'object') continue
+    shippedRow = component
+    reportRowSource('shipped')
+    return component
+  }
+  return null
+}
+
+/**
+ * Record which renderer the disclosure rows are actually using, per change.
+ * @param source - 'shipped' when the product's own row renders, 'fallback' for
+ * the built-in one.
+ */
+function reportRowSource(source) {
+  if (rowSource === source) return
+  rowSource = source
+  probe({ kind: 'row', source })
+}
 
 /**
  * Record one lifecycle fact where a page probe can read it.
@@ -889,104 +927,29 @@ function probe(event) {
   if (trace.events.length > 200) trace.events.shift()
 }
 
-/** Whether the shipped row compiled. */
-function probeCompiled(ok) {
-  probe({ kind: 'row', compiled: ok })
-}
-
 /**
- * Compile the shipped `TurnProcessNodeView` out of the Chat package's source map.
- *
- * The bundle ships `sourcesContent`, so the component's own source is fetched
- * from the same origin the page already trusts; only the two imports and the CSS
- * module default are rewritten, and the type-only import is dropped.
- * @returns the compiled component, or null when the source or transform fails.
- */
-async function compileDisclosureRow() {
-  try {
-    const script = [...document.querySelectorAll('script[src]')]
-      .map(element => element.getAttribute('src') ?? '')
-      .find(src => src.includes(`${CHAT_PACKAGE}/client.js`))
-    if (script === undefined) return null
-    const url = new URL(script, globalThis.location.href)
-    url.pathname += '.map'
-    const response = await fetch(url.href)
-    if (!response.ok) return null
-    const map = await response.json()
-    const index = map.sources.findIndex(source => typeof source === 'string'
-      && source.endsWith('/TurnProcessNodeView.tsx'))
-    if (index < 0 || typeof map.sourcesContent?.[index] !== 'string') return null
-    const body = compileRowSource(map.sourcesContent[index])
-    if (body === null) return null
-    // eslint-disable-next-line no-new-func -- the page's own source, fetched from its own origin
-    const factory = new Function(
-      'React',
-      'IconChevronDownOutline14',
-      'css',
-      'exports',
-      `${body}\nreturn typeof TurnProcessNodeView === 'function' ? TurnProcessNodeView : null`,
-    )
-    const component = factory(
-      React,
-      IconChevronDownOutline14,
-      ROW_CLASSES,
-      {},
-    )
-    const usable = typeof component === 'function'
-    probeCompiled(usable)
-    return usable ? component : null
-  } catch (error) {
-    probeCompiled(false)
-    console.warn('dsh-fold-it-up: shipped disclosure row unavailable, using the built-in one', error)
-    return null
-  }
-}
-
-/**
- * Rewrite the shipped view's module syntax for direct evaluation.
- * @param source - `TurnProcessNodeView.tsx` source from the source map.
- * @returns the rewritten body, or null when the shape is not the expected one.
- */
-function compileRowSource(source) {
-  const body = source
-    .replace(/^import \{[^}]*\} from 'react'\n/mu, 'const { memo } = React\n')
-    .replace(
-      /^import \{ IconChevronDownOutline14 \} from '[^']*ui-primitives'\n/mu,
-      '/* icon injected */\n',
-    )
-    .replace(/^import type [^\n]*\n/mu, '')
-    .replace(/^import css from [^\n]*\n/mu, '/* css injected */\n')
-  if (!/export const TurnProcessNodeView\b/u.test(body)) return null
-  return body.replace(/^export const TurnProcessNodeView\b/mu, 'const TurnProcessNodeView')
-}
-
-/** Fallback disclosure classes: the shipped stylesheet's own module names. */const ROW_CLASSES = {
-  root: 'jUC0fW_root',
-  label: 'jUC0fW_label',
-  chevron: 'jUC0fW_chevron',
-}
-
-/**
- * Built-in disclosure row, used only when the shipped source could not be
- * compiled. Markup and class names mirror the shipped view.
+ * Built-in disclosure row, used only when the shipped entry could not be
+ * borrowed from the slot ledger. Markup mirrors the shipped view; the classes
+ * are this package's own, so no product CSS-module hash can go stale on them.
  * @param props.node - the `turn-process` Chat node.
  * @param props.turnProcess - disclosure owner state.
  * @returns the row element.
  */
 function fallbackRow({ node, turnProcess }) {
+  reportRowSource('fallback')
   const strings_ = strings()
   const data = node.data
   const parts = []
   if (data.toolCallCount > 0) parts.push(strings_.toolCalls(data.toolCallCount))
   if (data.messageCount > 0) parts.push(strings_.messages(data.messageCount))
   if (data.subagentCount > 0) parts.push(strings_.subagents(data.subagentCount))
-  const label = parts.length === 0 ? strings_.thought : parts.join(' · ')
+  const label = parts.length === 0 ? strings_.thought : parts.join(strings_.separator)
   const open = turnProcess.open
   return React.createElement(
     'button',
     {
       type: 'button',
-      className: ROW_CLASSES.root,
+      className: 'dsh-fold-it-up-root',
       'data-fold-it-up-row': 'fallback',
       'data-open': open ? '' : undefined,
       'data-turn-process': data.turn,
@@ -999,11 +962,11 @@ function fallbackRow({ node, turnProcess }) {
         turnProcess.setOpen(!open)
       },
     },
-    React.createElement('span', { className: ROW_CLASSES.label }, label),
+    React.createElement('span', { className: 'dsh-fold-it-up-label' }, label),
     React.createElement(
       'svg',
       {
-        className: ROW_CLASSES.chevron,
+        className: 'dsh-fold-it-up-chevron',
         width: 14,
         height: 14,
         viewBox: '0 0 14 14',
@@ -1117,12 +1080,20 @@ export function apply(ctx) {
   // One controller per plugin mount: expansion state outlives every turn and
   // the per-session Chat view the rows render in.
   const controller = createController()
+  // The ledger this entry registers on is also where the SHIPPED renderer can
+  // be read back — see `resolveShippedRow`.
+  ledger = ctx.slots
   ctx.effect(() => {
     const style = insertStyles()
     return () => { style.remove() }
   }, 'dsh-fold-it-up: styles')
   ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => {
     try {
+      ownRow = (props) => React.createElement(
+        ControllerProvider,
+        { controller },
+        React.createElement(FoldRow, props),
+      )
       const dispose = ctx.slots.register(
         {
           name: 'conversation.chat.node',
@@ -1135,11 +1106,7 @@ export function apply(ctx) {
           store: createDisclosureStore,
           inject: sessionId => chatFace(ctx, sessionId),
         },
-        props => React.createElement(
-          ControllerProvider,
-          { controller },
-          React.createElement(FoldRow, props),
-        ),
+        ownRow,
       )
       // A registration that never took the cell is indistinguishable from a
       // working one at the surface, so say so where a person can see it.

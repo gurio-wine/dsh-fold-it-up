@@ -189,14 +189,14 @@ dsh plugin --profile web remove dsh-fold-it-up
 几个刻意的选择：
 
 1. **影子注册**。`priority: -1` 拿下这个 keyed 单元（官方是 `0`，**同一格优先级最低者渲染**）。包级 boot-graph 插件不过 runner 的 guard，所以这里的 `-1` 是真实语义，不是自动分配的。
-2. **复用产品自己的折叠行**。真实那一行是**运行时**从页面已经下载的 source map（`sourcesContent`）里取出 `TurnProcessNodeView.tsx` 源码、只改两处 import 后编译出来的。文案走 `chat` 命名空间既有词条（中英文跟随界面），样式、图标、间距全部一致，不需要跟着产品改版同步维护。取不到源码时退回内置等价实现。
+2. **复用产品自己的折叠行**。真实那一行就是**产品注册进槽位账本的原件**：`slots.entriesOfSlot('conversation.chat.node')` 的 `StoredEntry.component` 上挂着 Chat 包自己注册在 `turn-process` 键上的 `TurnProcessNodeView`，插件把格子影到自己名下之后，行的渲染直接**借账本里那个组件**——文案走 `chat` 命名空间既有词条，样式（CSS module 类名）在产品构建期就已绑定。不取源码、不编译、不碰任何类名哈希，产品改版不需要跟着同步维护。借不到时退回内置等价实现（自带 `.dsh-fold-it-up-*` 样式），`__FOLDITUP__` 里的 `{kind:'row', source}` 如实记下用的是哪个。（早先版本试图从 source map 的 `sourcesContent` 取 `TurnProcessNodeView.tsx` 现场编译——但那是 TSX 原文，JSX 与类型标注在语法层就进不了 `new Function`，那条路从未真正工作过，已整套移除。）
 3. **隐藏用官方同一套机制**。给同一批 wrapper 元素挂 `hidden="until-found"`——这正是 `ChatNodeSeat` 自己用的属性，因此「隐藏的行不占列间距」的节奏和 find-on-page 都保持不变。
 4. **展开状态从行元素上读回**。折叠行自己会写 `data-open`；pass 读它来决定这一轮要不要展开。这一点踩过坑：`data-open` 写在**行**上，而索引里拿到的是外面的**座位**包装元素，读错对象会让每一次点击都变成空操作。
 5. **一个稳定的锚点元素**。组件在「还不知道该不该折」和「已经折好」两种状态下都渲染同一个容器元素，控制器从它解析当前的 transcript 列。它必须一直存在：折好之后那一行本身就不渲染了。
 6. **监听 DOM，而不只是监听 store**。列上挂 `MutationObserver`——一页被提交进来时，负责渲染那一轮行的那次 React 提交**不会**通知这个插件，但会改动 DOM。
 7. **无构建步骤的构建**。`tools/build.mjs` 是一个字面量的 ESM→bundle 转换器（本包自己写的四种语法形式），把 `src/*.js` 内联进 `client.js`，平台模块（`react`、`@deepseek-ai/dsh-client-store`）留给 boot 模块表。生成物入库，装插件不需要任何工具链。
 
-诊断：页面里 `globalThis.__FOLDITUP__` 保存最近 200 条生命周期记录（注册是否拿到格子、每次 pass 读到的列规模与分组数）。每一行上还有两个由 pass 写下的属性：`data-folditup-seq`（该行在 store 里的排序位置，取不到就没有）与 `data-folditup-turn`（管这一行的轮次——注入上下文行的归属只写在这里）。
+诊断：页面里 `globalThis.__FOLDITUP__` 保存最近 200 条生命周期记录（注册是否拿到格子、每次 pass 读到的列规模与分组数、折叠行用的是产品原件还是内置行——`{kind:'row', source}`）。每一行上还有两个由 pass 写下的属性：`data-folditup-seq`（该行在 store 里的排序位置，取不到就没有）与 `data-folditup-turn`（管这一行的轮次——注入上下文行的归属只写在这里）。
 
 ## 验证
 
