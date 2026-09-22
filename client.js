@@ -122,15 +122,6 @@ window.__ModuleLoader__.load({
      * below `processStartSeq`. That is enough for the hide set, because a row is
      * only ever hidden when it precedes the Turn's answer, and the answer always
      * belongs to the Turn itself.
-     *
-     * THE ANSWER'S FIRST LINE IS THE POINT
-     *
-     * A turn that closes after a long answer leaves the view at the bottom of that
-     * answer, which is the wrong end to read it from. The decision below turns "a
-     * turn just closed" plus four numbers measured off the scroller into one scroll,
-     * and it lives here rather than in the browser half for the usual reason: every
-     * condition that must leave the reader alone is a truth table, and a truth table
-     * that only a browser can exercise is a truth table nobody checks.
      */
 
     /** Chat Node kinds that stay outside the fold's hiding range. */
@@ -517,45 +508,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Where one just-closed Turn's question should be scrolled to, or null.
-     *
-     * The scroll exists because a finished answer is read from its FIRST line, while
-     * the transcript is left at its last one. Only a Turn that has just closed
-     * qualifies: a Turn that was already closed when the page loaded (a history, a
-     * session switch) is not an event, and scrolling on mount would yank the reader
-     * away from wherever they were. Everything else here is a reason to leave the
-     * scrollbar alone, and each one is a separate way this could be annoying:
-     *
-     *   - no question row resolved — nothing to aim at;
-     *   - `floor <= 0` — the transcript does not scroll at all, which is the short
-     *     answer case: the write would be a no-op anyway, and not making it keeps
-     *     the "already at the top" state from being re-evaluated forever;
-     *   - the question is already on the scrollport's top edge — the view is where
-     *     this would put it, so moving it would only be a visible twitch.
-     *
-     * Only the offset is computed here: HOW the scroll animates belongs to the
-     * stylesheet, where `prefers-reduced-motion` can rewrite it without this
-     * decision having to know the reader's motion setting.
-     * @param change - `{ closed, wasOpen }`: the Turn's closure in the current pass
-     *   (`closed: boolean | undefined`) and whether its disclosure was expanded in
-     *   the previous one (expanding a Turn is the reader's own gesture, not a
-     *   moment to move their view).
-     * @param geometry - `{ scrollTop, floor, questionTop }`, all in pixels; the
-     *   question's top is measured against the scrollport's own top edge.
-     * @returns `{ top }`, or null when the reader must be left alone.
-     */
-    function autoScrollTarget(change, geometry) {
-      if (change?.closed !== true) return null
-      if (change.wasOpen === true) return null
-      if (geometry === null || geometry === undefined) return null
-      const { scrollTop, floor, questionTop } = geometry
-      if (![scrollTop, floor, questionTop].every(Number.isFinite)) return null
-      if (floor <= 0) return null
-      if (Math.abs(questionTop) <= 0.5) return null
-      return { top: Math.max(0, scrollTop + questionTop) }
-    }
-
-    /**
      * Fold one whole flow column and apply the result to its rows.
      *
      * One call is one complete pass: the column is read, every Turn is decided, and
@@ -627,7 +579,7 @@ window.__ModuleLoader__.load({
       }
       return { turns, counted: { column: column.querySelectorAll(`[${KIND_ATTRIBUTE}]`).length, groups: groups.size } }
     }
-    const __module1 = { exports: { INDEPENDENT_KINDS, CONTEXT_KIND, CLOSING_KINDS, TURN_ATTRIBUTE, KIND_ATTRIBUTE, KEY_ATTRIBUTE, MEMBER_ATTRIBUTE, ROW_ATTRIBUTE, isIndependentKind, isContextRow, turnOfSeat, isProcessMember, isAnswerRow, rowOfSeat, groupSeats, effectiveTurns, attachNodeData, foldTurn, autoScrollTarget, foldColumn } }
+    const __module1 = { exports: { INDEPENDENT_KINDS, CONTEXT_KIND, CLOSING_KINDS, TURN_ATTRIBUTE, KIND_ATTRIBUTE, KEY_ATTRIBUTE, MEMBER_ATTRIBUTE, ROW_ATTRIBUTE, isIndependentKind, isContextRow, turnOfSeat, isProcessMember, isAnswerRow, rowOfSeat, groupSeats, effectiveTurns, attachNodeData, foldTurn, foldColumn } }
 
     /* src/browser.js */
     /**
@@ -675,7 +627,7 @@ window.__ModuleLoader__.load({
 
     const React = require("react")
     const { defineStore } = require("@deepseek-ai/dsh-client-store")
-    const { autoScrollTarget: autoScrollTarget$0, foldColumn: foldColumn$1 } = __module1.exports
+    const { foldColumn: foldColumn$0 } = __module1.exports
     /** Package name; also the module-table key this bundle registers under. */
     const PACKAGE = 'dsh-fold-it-up'
 
@@ -687,17 +639,6 @@ window.__ModuleLoader__.load({
      * Only the built-in fallback row reads it; the shipped row uses `chat` keys.
      */
     const LOCALE_KEY = 'dsh-fold-it-up.locale'
-
-    /**
-     * Scroll knob: `localStorage['dsh-fold-it-up.autoScroll'] = 'off'`.
-     *
-     * On by default: a finished answer is read from its first line, while the
-     * transcript is left at its last one.
-     */
-    const SCROLL_KEY = 'dsh-fold-it-up.autoScroll'
-
-    /** How long after a reader gesture a turn close keeps its hands off the view. */
-    const READER_GRACE_MS = 1500
 
     const STRINGS = {
       zh: {
@@ -853,7 +794,6 @@ window.__ModuleLoader__.load({
       let observerColumn = null
       let scheduled = null
       let running = false
-      const autoScroll = createAutoScroll()
 
       const run = (reason) => {
         if (scope === null || running) return
@@ -865,13 +805,9 @@ window.__ModuleLoader__.load({
         const column = flowColumn(scope.anchor)
         if (column === null) return
         if (observer === null || observerColumn !== column) watch(column)
-        autoScroll.watchReader()
         running = true
         try {
           const next = runPass(column, scope.nodeAt)
-          // The scroll is decided from the same pass the fold is applied in, so it
-          // measures a column that already has its final geometry.
-          autoScroll.onPublication(next, column)
           if (samePublication(published, next)) return
           published = next
           for (const listener of [...listeners]) {
@@ -996,7 +932,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The DOM operations one fold pass performs, in the shape `foldColumn$1` expects.
+     * The DOM operations one fold pass performs, in the shape `foldColumn$0` expects.
      *
      * Keeping them here is what lets the pass itself live in `logic.js` and be
      * exercised without a browser.
@@ -1062,7 +998,7 @@ window.__ModuleLoader__.load({
      * @returns the publication `{ turns: Map<number, decision> }`.
      */
     function runPass(column, nodeAt) {
-      const { turns, counted } = foldColumn$1(column, nodeAt, PASS_OPS)
+      const { turns, counted } = foldColumn$0(column, nodeAt, PASS_OPS)
       probe({ kind: 'pass', ...counted, turns: turns.size })
       return { turns }
     }
@@ -1102,273 +1038,6 @@ window.__ModuleLoader__.load({
         node = node.parentElement
       }
       return null
-    }
-
-    /**
-     * One transcript's identity, as stable text.
-     *
-     * The fold controller resolves its column from the anchor on every pass, and
-     * that element can be replaced by a re-render without the conversation changing.
-     * A session switch, by contrast, always changes the oldest turn number the
-     * window holds, or the first rendered key. Auto-scroll uses this as its "is this
-     * the same history" test, because a column ELEMENT is the wrong question to ask:
-     * measured live, treating a column identity change as a new history silently ate
-     * the close transition about half the time.
-     *
-     * Only these two marks: anything that grows as the transcript does (a row count,
-     * a per-turn tally) would make every pass look like a new history.
-     * @param column - the flow column.
-     * @returns a signature string, or null when the column has no rows yet.
-     */
-    function transcriptSignature(column) {
-      let lowest = null
-      let sample = null
-      for (const element of column.querySelectorAll('[data-chat-flow-kind]')) {
-        const turn = Number(element.getAttribute('data-chat-turn'))
-        if (Number.isSafeInteger(turn)) lowest = lowest === null ? turn : Math.min(lowest, turn)
-        if (sample === null) sample = element.getAttribute('data-chat-anchor-key')
-      }
-      return `${String(lowest)}|${String(sample)}`
-    }
-
-    /**
-     * The element that actually scrolls the transcript.
-     *
-     * `ChatView` delegates to an enclosing `[data-conversation-scroll]` when the
-     * conversation host provides one, and otherwise owns the scroll itself
-     * (`scrollerOf` in the shipped view). Measured live, the host attribute is
-     * present, so that branch is the normal path and it is tried first; the walk up
-     * from the column is the fallback for a layout without the host.
-     * @param column - the flow column.
-     * @returns the scroller, or null when nothing scrolls this transcript.
-     */
-    function scrollPortOf(column) {
-      const host = column.closest('[data-conversation-scroll]')
-      if (host !== null) return host
-      let node = column
-      while (node !== null && node !== document.body) {
-        const style = getComputedStyle(node)
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll') return node
-        node = node.parentElement
-      }
-      return null
-    }
-
-    /**
-     * The question row of one Turn: the last question at or below this Turn number.
-     *
-     * The question is a `user` kind, and a turn-less row never matches, so the
-     * search can only land on a real question. The "last at or below" shape covers
-     * the one case where a Turn carried no question of its own.
-     * @param column - the flow column.
-     * @param turn - the Turn number.
-     * @returns the question seat wrapper, or null.
-     */
-    function questionSeat(column, turn) {
-      let found = null
-      for (const element of column.querySelectorAll('[data-chat-flow-kind="user"]')) {
-        const owner = Number(element.getAttribute('data-chat-turn'))
-        if (!Number.isSafeInteger(owner) || owner > turn) continue
-        found = element
-      }
-      return found
-    }
-
-    /**
-     * Whether auto-scrolling is switched off for this browser.
-     * @returns whether the reader asked for no automatic scrolling.
-     */
-    function autoScrollDisabled() {
-      try {
-        return globalThis.localStorage?.getItem(SCROLL_KEY) === 'off'
-      } catch {
-        // A blocked storage means no opt-out, which is the default state anyway.
-        return false
-      }
-    }
-
-    /**
-     * Carry the reader to the top of the question whose answer just finished.
-     *
-     * The controller calls this once per fold pass with the Turn states before and
-     * after that pass, and it decides from those two states plus live geometry. It
-     * owns three things a pass cannot: the reader's own gestures (so a turn closing
-     * never interrupts someone scrolling back), the one-shot nature of "this Turn
-     * just closed", and the transcript's identity — see `transcriptSignature` for
-     * why the last one is a signature rather than the live column element.
-     * @returns `{ onPublication, watchReader, forget }`.
-     */
-    function createAutoScroll() {
-      /** When the reader last moved the view themselves; 0 = not yet this document. */
-      let lastReaderGestureAt = 0
-      /** Publication the previous pass produced, for edge detection. */
-      let previous = null
-      /** Signature of the transcript `previous` describes. */
-      let signature = null
-      /** Whether the next pass is the first look at this transcript. */
-      let baseline = true
-      /** The Turn number the last noticed close scrolled for, to keep it one-shot. */
-      let scrolledTurn = null
-      /** The deferred scroll still owed to a Turn, so a remount can drop it. */
-      let pendingFrame = null
-      /** Whether the reader listens on the document already. */
-      let watching = false
-
-      const noteGesture = () => { lastReaderGestureAt = performance.now() }
-
-      /**
-       * Measure the settled transcript and move the view.
-       *
-       * Everything is read here rather than at detection time: the scroller, the
-       * question row and the offset are all properties of the layout as it stands
-       * once the fold has been applied, which is exactly one frame after the pass
-       * that decided it.
-       *
-       * The write is INSTANT, and then VERIFIED on the following frame. Both halves
-       * are load-bearing:
-       *
-       *   - animated scrolling loses a race it cannot see. The app follows the flow
-       *     tip itself when a turn closes, so two scroll animations would be alive at
-       *     once, and measured live the plugin's write was recorded
-       *     (`from 1993 to 56`) while the view stayed on the floor — landing in one
-       *     run and not in the next. An assignment has no animation to lose;
-       *   - the follow-up frame catches the case where the app's own write lands
-       *     after ours. It re-measures, and only writes again if the question is
-       *     really somewhere else. A reader gesture in the meantime cancels it: the
-       *     correction is a repair, never a fight with the person scrolling.
-       * @param candidate - `{ turn, before }` for the Turn that closed.
-       * @param column - the flow column the pass read.
-       * @param verify - whether this call is the follow-up frame.
-       */
-      const write = (candidate, column, verify = false) => {
-        pendingFrame = null
-        const scroller = scrollPortOf(column)
-        const question = questionSeat(column, candidate.turn)
-        if (scroller === null || question === null) {
-          if (!verify) {
-            probe({ kind: 'scroll', turn: candidate.turn, skipped: scroller === null ? 'no-scroller' : 'no-question' })
-          }
-          return
-        }
-        // Read BEFORE writing: a `scrollTop` sampled after the assignment reports the
-        // destination, which makes the record of a scroll read `from 56 to 56`.
-        const from = Math.round(scroller.scrollTop)
-        const port = scroller.getBoundingClientRect()
-        const target = autoScrollTarget$0(
-          { closed: true, wasOpen: candidate.before?.open === true },
-          {
-            scrollTop: scroller.scrollTop,
-            floor: Math.max(0, scroller.scrollHeight - scroller.clientHeight),
-            questionTop: question.getBoundingClientRect().top - port.top,
-          },
-        )
-        if (target === null) {
-          // On the verification frame an aligned question is the expected outcome,
-          // not a decision worth recording twice.
-          if (!verify) probe({ kind: 'scroll', turn: candidate.turn, skipped: 'no-op' })
-          return
-        }
-        if (verify && performance.now() - lastReaderGestureAt < READER_GRACE_MS) {
-          probe({ kind: 'scroll', turn: candidate.turn, skipped: 'reader-gesture' })
-          return
-        }
-        // Instant: see above, and it is also why this bundle never has to consult
-        // `prefers-reduced-motion` for the correctness of the move.
-        scroller.scrollTop = target.top
-        probe({
-          kind: 'scroll',
-          turn: candidate.turn,
-          verify,
-          from,
-          to: Math.round(target.top),
-          landed: Math.round(scroller.scrollTop),
-        })
-        if (!verify && typeof requestAnimationFrame === 'function') {
-          pendingFrame = requestAnimationFrame(() => { write(candidate, column, true) })
-        }
-      }
-
-      return {
-        /**
-         * React to one published fold state.
-         *
-         * The controller passes the transcript's signature alongside the states, so
-         * this can tell "a new history" from "the same history, re-rendered".
-         * @param publication - `{ turns: Map<number, decision> }`.
-         * @param column - the flow column this pass read.
-         */
-        onPublication(publication, column) {
-          const turns = publication?.turns ?? new Map()
-          const current = column === null || column === undefined ? null : transcriptSignature(column)
-          if (current !== null && current !== signature) {
-            // A different history: nothing on it is an event the reader just lived
-            // through, so the first look is a baseline and the scroll still owed for
-            // the old transcript (whose column is on its way out) is dropped.
-            if (pendingFrame !== null && typeof cancelAnimationFrame === 'function') {
-              cancelAnimationFrame(pendingFrame)
-            }
-            pendingFrame = null
-            signature = current
-            baseline = true
-          }
-          if (baseline) {
-            // Nothing before the first pass of a transcript is an event: a session
-            // that opens with finished turns (history, a switch) must not scroll.
-            baseline = false
-            previous = turns
-            return
-          }
-          let candidate = null
-          for (const [turn, decision] of turns) {
-            const before = previous.get(turn)
-            if (decision.closed !== true) continue
-            if (before !== undefined && before.closed === true) continue
-            candidate = { turn, decision, before }
-          }
-          previous = turns
-          if (candidate === null) return
-          probe({ kind: 'scroll', turn: candidate.turn, noticed: true })
-          // Noticed is consumed, whatever comes of it: a Turn closes exactly once,
-          // so a reader gesture or a disabled setting must not leave the decision
-          // armed for the next pass to act on a few hundred milliseconds later.
-          if (candidate.turn === scrolledTurn) return
-          scrolledTurn = candidate.turn
-          if (autoScrollDisabled()) return
-          if (performance.now() - lastReaderGestureAt < READER_GRACE_MS) {
-            probe({ kind: 'scroll', turn: candidate.turn, skipped: 'reader-gesture' })
-            return
-          }
-          if (column === null) return
-          // The scroll is DEFERRED by one frame, and that is not a detail.
-          //
-          // This call happens inside a React layout effect, in the same frame the
-          // fold is applying its own layout change. Measured live, a smooth scroll
-          // started in that frame never arrived: the plugin recorded
-          // `from 1992 to 56`, and the next sample found the view back at the floor.
-          // A scroll animation runs while the browser is still settling the fold's
-          // height change, so the delivered position is corrected out from under it.
-          // Waiting one frame lets the geometry be final; the target is then
-          // measured and written from that final state.
-          if (typeof requestAnimationFrame === 'function') {
-            pendingFrame = requestAnimationFrame(() => { write(candidate, column) })
-            return
-          }
-          write(candidate, column)
-        },
-        /**
-         * Start noticing the reader's own scroll gestures.
-         *
-         * `passive` throughout: this observer must never be able to delay the
-         * gesture it is watching for.
-         */
-        watchReader() {
-          if (watching) return
-          watching = true
-          for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
-            document.addEventListener(type, noteGesture, { passive: true, capture: true })
-          }
-        },
-      }
     }
 
     /** One element per disclosure, so the row can be anchored without a ref prop. */
