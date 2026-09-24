@@ -771,18 +771,20 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Create the page-scoped disclosure controller.
+     * Create one disclosure controller for one session-scoped Chat view.
      *
      * It owns two things a per-row component cannot: one column-wide pass (reading
      * the rendered column is the expensive part, and N rows must not each repeat it)
      * and the published per-turn result every row renders from. The store above is
-     * per session; the DOM and its passes belong to the page.
+     * per session; the DOM and its passes belong to that same session's Chat view.
+     * Keeping this boundary per session is required because DSH can render the main
+     * conversation and a subagent conversation at the same time.
      *
      * Publication is deliberately not a React state write from inside the pass: the
      * pass already runs in a layout effect during commit, so it hands the result to
      * this controller and the controller's subscribers re-render. That keeps one
      * writer for the DOM and one source for what each row shows.
-     * @returns the controller shared by every disclosure row through React context.
+     * @returns the controller shared by disclosure rows in one session.
      */
     function createController() {
       const listeners = new Set()
@@ -845,11 +847,26 @@ window.__ModuleLoader__.load({
         observerColumn = column
       }
 
+      const releaseWhenIdle = () => {
+        if (listeners.size !== 0) return
+        if (scheduled !== null) {
+          if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(scheduled)
+          scheduled = null
+        }
+        observer?.disconnect()
+        observer = null
+        observerColumn = null
+      }
+
       return {
         /** @param listener - publication callback. @returns unsubscribe. */
         subscribe(listener) {
           listeners.add(listener)
-          return () => { listeners.delete(listener) }
+          if (scope !== null && observer === null) schedule()
+          return () => {
+            listeners.delete(listener)
+            releaseWhenIdle()
+          }
         },
         /**
          * Point the controller at one live element of the transcript it folds.
@@ -1290,12 +1307,14 @@ window.__ModuleLoader__.load({
      * observable for its own entry.
      * @param ctx - client root context.
      * @param sessionId - the rendering session.
+     * @param controller - controller owned by this session's Chat view.
      * @returns the entry's inject face.
      */
-    function chatFace(ctx, sessionId) {
+    function chatFace(ctx, sessionId, controller) {
       return {
         hooks: {},
         keyedHooks: {},
+        controller,
         useChat: createSourceHook(() => chatSource(ctx, sessionId)),
       }
     }
@@ -1340,8 +1359,11 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Cache one wrapper for each stable Chat target object. */
+    const chatSourceCache = new WeakMap()
+
     /**
-     * Resolve the session's chat target once per inject face.
+     * Resolve the session's chat target and reuse its source wrapper.
      * @param ctx - client root context.
      * @param sessionId - the rendering session.
      * @returns the chat snapshot source, or undefined before the binding exists.
@@ -1357,10 +1379,14 @@ window.__ModuleLoader__.load({
       }
       const target = binding?.target?.('chat')
       if (target === undefined) return undefined
-      return {
+      const cached = chatSourceCache.get(target)
+      if (cached !== undefined) return cached
+      const source = {
         getSnapshot: () => target.getSnapshot(),
         subscribe: listener => target.subscribe(listener),
       }
+      chatSourceCache.set(target, source)
+      return source
     }
 
     /** Required services: the slot seat, the locale seat, and the Chat binding. */
@@ -1377,9 +1403,18 @@ window.__ModuleLoader__.load({
      * @param ctx - client root context.
      */
     function apply(ctx) {
-      // One controller per plugin mount: expansion state outlives every turn and
-      // the per-session Chat view the rows render in.
-      const controller = createController()
+      // DSH may render the main conversation and one or more subagent
+      // conversations at the same time. Their stores and DOM columns are
+      // session-scoped, so their disclosure controllers must be too.
+      const controllers = new Map()
+      const controllerFor = (sessionId) => {
+        let controller = controllers.get(sessionId)
+        if (controller === undefined) {
+          controller = createController()
+          controllers.set(sessionId, controller)
+        }
+        return controller
+      }
       // The ledger this entry registers on is also where the SHIPPED renderer can
       // be read back — see `resolveShippedRow`.
       ledger = ctx.slots
@@ -1391,7 +1426,7 @@ window.__ModuleLoader__.load({
         try {
           ownRow = (props) => React.createElement(
             ControllerProvider,
-            { controller },
+            { controller: props.controller },
             React.createElement(FoldRow, props),
           )
           const dispose = ctx.slots.register(
@@ -1404,7 +1439,7 @@ window.__ModuleLoader__.load({
               // the row this entry replaces, so the shipped labels keep working.
               locale: CHAT_NS,
               store: createDisclosureStore,
-              inject: sessionId => chatFace(ctx, sessionId),
+              inject: sessionId => chatFace(ctx, sessionId, controllerFor(sessionId)),
             },
             ownRow,
           )

@@ -155,6 +155,30 @@ test('the plugin claims the turn-process cell at a shadowing priority', () => {
   assert.equal(typeof options.inject, 'function')
 })
 
+test('the disclosure controller is stable within a session and isolated across sessions', () => {
+  const bundle = loadBundle()
+  const exports = loadExports(bundle)
+  let options
+  const ctx = {
+    effect: (body) => { body() },
+    slots: {
+      inject: (_key, callback) => callback(),
+      entriesOfSlot: () => [{ options: { key: 'turn-process', priority: -1 } }],
+      register: (registered) => { options = registered },
+    },
+    uiConversation: {
+      binding: () => ({ target: () => ({ getSnapshot: () => ({}), subscribe: () => () => {} }) }),
+    },
+  }
+  exports.apply(ctx)
+  assert.equal(typeof options.inject, 'function')
+  const main = options.inject('main-session')
+  const mainAgain = options.inject('main-session')
+  const subagent = options.inject('child-session')
+  assert.equal(main.controller, mainAgain.controller, 'one session reuses one controller')
+  assert.notEqual(main.controller, subagent.controller, 'sidebar session gets its own controller')
+})
+
 test('the declared store starts collapsed and toggles per turn', () => {
   const bundle = loadBundle()
   const exports = loadExports(bundle)

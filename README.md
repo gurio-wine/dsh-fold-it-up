@@ -164,7 +164,8 @@ dsh plugin --profile web remove dsh-fold-it-up
 4. **展开状态从行元素上读回**。折叠行自己会写 `data-open`；pass 读它来决定这一轮要不要展开。这一点踩过坑：`data-open` 写在**行**上，而索引里拿到的是外面的**座位**包装元素，读错对象会让每一次点击都变成空操作。
 5. **一个稳定的锚点元素**。组件在「还不知道该不该折」和「已经折好」两种状态下都渲染同一个容器元素，控制器从它解析当前的 transcript 列。它必须一直存在：折好之后那一行本身就不渲染了。
 6. **监听 DOM，而不只是监听 store**。列上挂 `MutationObserver`——一页被提交进来时，负责渲染那一轮行的那次 React 提交**不会**通知这个插件，但会改动 DOM。
-7. **无构建步骤的构建**。`tools/build.mjs` 是一个字面量的 ESM→bundle 转换器（本包自己写的四种语法形式），把 `src/*.js` 内联进 `client.js`，平台模块（`react`、`@deepseek-ai/dsh-client-store`）留给 boot 模块表。生成物入库，装插件不需要任何工具链。
+7. **每个 session 一个控制器**。主会话和 sidebar 里的子代理会同时拥有各自的 transcript、store 和 DOM 列；controller、observer 和 publication 不跨 session 共享，关闭子代理后也会释放它的监听。
+8. **无构建步骤的构建**。`tools/build.mjs` 是一个字面量的 ESM→bundle 转换器（本包自己写的四种语法形式），把 `src/*.js` 内联进 `client.js`，平台模块（`react`、`@deepseek-ai/dsh-client-store`）留给 boot 模块表。生成物入库，装插件不需要任何工具链。
 
 诊断：页面里 `globalThis.__FOLDITUP__` 保存最近 200 条生命周期记录（注册是否拿到格子、每次 pass 读到的列规模与分组数、折叠行用的是产品原件还是内置行——`{kind:'row', source}`）。每一行上还有两个由 pass 写下的属性：`data-folditup-seq`（该行在 store 里的排序位置，取不到就没有）与 `data-folditup-turn`（管这一行的轮次——注入上下文行的归属只写在这里）。
 
